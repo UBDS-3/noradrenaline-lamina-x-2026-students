@@ -10,8 +10,8 @@ and exactly how to work in it.
 2. Clone the repo:
 
    ```bash
-   git clone https://github.com/UBDS-3/Noradrenaline_Lamina_X_2026_students.git
-   cd Noradrenaline_Lamina_X_2026_students
+   git clone https://github.com/UBDS-3/noradrenaline-lamina-x-2026-students.git
+   cd noradrenaline-lamina-x-2026-students
    ```
 
 3. Create **your own branch** — replace `firstname` with your actual first name (lowercase, no spaces):
