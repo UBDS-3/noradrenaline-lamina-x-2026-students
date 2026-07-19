@@ -54,4 +54,6 @@ raw_files/
 
 raw_data/
 
-.zip
+*.zip
+
+*.abf
