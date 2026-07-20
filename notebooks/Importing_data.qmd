@@ -1,0 +1,130 @@
+---
+title: "Importing_data"
+author: "maryna"
+date: July 20, 2026
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+## Importing data from cell 2023_03_22_2
+
+This is .qmd document for importing patch clamp data for cell 2023_03_22_2
+
+Cell: 2023_03_22_2
+
+*(Shortcut for new chunk: ctrl+alt+I)*
+
+The chunk below was made to make `dplyr` overwrite system's `rename` and make `as.factor` work as base one.
+
+```{r setup}
+library(readABF)
+library(conflicted)
+library(dplyr)
+library(tidyverse)
+
+# Tell R to prefer dplyr functions over base/stats
+conflict_prefer("rename", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicts_prefer(base::as.factor)
+
+```
+
+Firstly, import one file. To make data tidy we use `as.data.frame.`The file contains several sweeps, so we need to specify which one. Here `sqrt` is an argument and not a function, therefore no brackets needed. Function `map` uses the second argument as a function that applies to the first one, `map` always return a list.
+
+```{r import_file}
+example_file <- readABF("../data/2023-03-22_2/2023_03_22_0032.abf")
+
+#map(1:10, sqrt)
+
+extract_sweep <- function(sweep_n, abf){
+  abf |> 
+    as.data.frame(sweep = sweep_n) |> 
+    mutate(sweep = sweep_n) 
+# We add a variable to the given data frame, which will be usefull
+}
+
+#extract_sweep(5, example_file)
+sweep_dfs <- map(1:length(example_file$data), 
+                 extract_sweep, abf = example_file)
+example_df <- bind_rows(sweep_dfs)
+# To combine data frames created by map to one
+
+abf_to_df <- function(abf_given){
+  map(1:length(abf_given$data), extract_sweep, abf = abf_given) |> 
+    bind_rows()
+    
+}
+#abf_to_df(example_file)
+knitr::kable(head(example_df))
+```
+
+Import all data for the cell.
+
+Function list.files with parameter `full.names = TRUE` it saves the pathes and not just names. `pattern` filters the files by types
+
+```{r import}
+files <- list.files("../data/2023-03-22_2/", 
+           full.names = TRUE, 
+           pattern = ".abf")
+
+abfs <- map(files, readABF)
+
+dfs <- map(abfs, abf_to_df)
+
+files |> str_sub(-9, -5) 
+# We get the files' endings to use it as names
+
+names(dfs) <- files |> 
+  str_sub(-9, -5)
+#names(dfs)
+
+# To make the previous name be seen by R we take it in ``, because 
+# it was written badly (with space and special symbols) 
+example_df <- example_df |> rename(
+  time_s = `Time [s]`,
+  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]" ))
+)
+
+dfs <- map(
+  dfs, 
+  rename, 
+  time_s = `Time [s]`,
+  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]" ))
+  )
+dfs <- map(dfs, select, time_s, current_pA, sweep)
+
+all_sweeps <- bind_rows(dfs, .id = "file")
+all_sweeps <- all_sweeps |> 
+  # only the files with AC or C stim, there is no recordings of 
+  # A-stim in Noradrenaline so no need to import it
+  filter (file %in% c("_0032", "_0036", "_0037")) |> 
+  mutate(
+    # type of fibers stimulated in this file / sweep (C or both)
+    stim = if_else(sweep <= 10, "AC", "C"),
+    # condition of recording (control, noradrenaline, washout)
+    cond = case_when(
+      file == "_0032" ~ "control",
+      file == "_0036" ~ "noradrenalin",
+      file == "_0037" ~ "washout"
+    )
+  ) |> 
+  mutate(
+    stim = as.factor(stim),
+    cond = as.factor(cond),
+  )
+```
+
+## Session info
+
+```{r info}
+sessionInfo()
+```
