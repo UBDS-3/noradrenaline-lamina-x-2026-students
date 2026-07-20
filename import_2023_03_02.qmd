@@ -1,0 +1,147 @@
+---
+title: "Import_2023_03_02"
+author: Mariia Grybenko
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 6
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: false
+execute:
+  warning: false
+  message: false
+---
+
+## About
+
+This is the document for importing data file on neuron stimulation from 2023.03.02. 
+
+```{r}
+#| include: false
+# install.packages("readABF")
+library(readABF)
+library(tidyverse)
+```
+
+## Introducing example file, making tidy, creating functions
+
+```{r - example import}
+ 
+
+example_file <- (readABF("data/2023-03-02/2023_03_02_0007.abf"))
+
+extract_sweep <- function(sweep_n, abf) {
+  abf %>% 
+    as.data.frame(sweep = sweep_n) %>%
+    mutate(sweep = sweep_n)
+}
+
+#extract_sweep(sweep = 1, abf = example_file)
+
+all_sweeps_example <- map(1:length(example_file$data), extract_sweep, abf = example_file)
+
+
+all_rows_example <- bind_rows(all_sweeps_example)
+
+
+abf_to_df <- function(abf){
+  map(1:length(abf$data), extract_sweep, abf = abf) |> 
+    bind_rows()
+}
+
+#abf_to_df(example_file)
+```
+
+## Importing my data
+Transforming into a data frame, changing names, binding data 
+
+```{r - true import}
+files <- list.files("data/2023-03-02", pattern = ".abf", full.names = TRUE)
+abfs <- map(files, readABF)
+dfs <- (map(abfs, abf_to_df))                    
+
+
+names(dfs) <- files |> str_sub(-9, -5)
+# names(dfs) <- str_sub(files, -9, -5) - second option 
+
+
+dfs <- dfs %>% map(
+  rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`
+)
+
+dfs <- map(dfs, select, time_s, current_pA, sweep)
+
+all_sweeps <- bind_rows(dfs, .id = "file" )
+
+          
+```
+
+## READ_me on the 2023_03_02 stimulus data 
+This is the file with parts of code used to annotate and make tidy 
+all imported data from each cell. The code in each chunk was based on
+descriptions, stored in the .txt files within each cell data folder
+
+Transforming into a data frame, changing names, selecting variables
+```{r}
+
+files <- list.files("data/2023-03-02", pattern = ".abf", full.names = TRUE)
+
+abfs <- map(files, readABF)
+
+# making short names for each object like with last 5 symbols "_0004"
+names(abfs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+dfs <- map(abfs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+dfs <- map(dfs, rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`)
+
+# select only important variables:
+dfs <- map(dfs, select, time_s, current_pA, sweep)
+
+```
+
+Binding, filtering based on the condition
+```{r _2023_03_02}
+
+# 2023-03-02
+all_sweeps <- bind_rows(dfs, .id = "file")
+
+all_sweeps <- all_sweeps %>%
+    # "_0006" file have changing stimulus and not suitable for compare 
+    filter (file != "_0006") %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        stim = if_else(
+            file %in% c("_0005", "_0008", "_0011", "_0013"),
+            "A",
+            if_else(
+                sweep <= 7, "AC", "C"
+            )
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0004", "_0005", "_0007", "_0008") ~ "control",
+            file %in% c("_0010", "_0011") ~ "noradrenalin",
+            file %in% c("_0012", "_0013") ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```
+
+
+
