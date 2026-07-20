@@ -5,6 +5,8 @@
 # Session Data files
 .RData
 .RDataTmp
+*.RDataTmp*
+
 
 # User-specific files
 .Ruserdata
@@ -57,4 +59,9 @@ raw_data/
 *.zip
 
 *.abf
+
 .Rproj.user
+
+*.txt
+
+*.tmp

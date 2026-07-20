@@ -1,0 +1,503 @@
+---
+title: "Merging_annotate_all_cells"
+format: html
+---
+
+
+## About
+
+This is the file with parts of code used to annotate and make tidy 
+all imported data from each cell. The code in each chunk was based on
+descriptions, stored in the .txt files within each cell data folder
+
+## 2023_03_02
+
+```{r import1}
+
+files <- list.files("../data/2023-03-02/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`)
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2023_03_02}
+
+# 2023-03-02
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # "_0006" file have changing stimulus and not suitable for compare 
+    filter (file != "_0006") %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        stim = if_else(
+            file %in% c("_0005", "_0008", "_0011", "_0013"),
+            "A",
+            if_else(
+                sweep <= 7, "AC", "C"
+            )
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0004", "_0005", "_0007", "_0008") ~ "control",
+            file %in% c("_0010", "_0011") ~ "noradrenalin",
+            file %in% c("_0012", "_0013") ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## 2023_03_07
+
+```{r import2}
+
+files <- list.files("../data/2023-03-07/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`)
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2023_03_07}
+
+# 2023-03-07
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # only the files with AC or C stim, there is no recordings of 
+    # A-stim in Noradrenaline so no need to import it
+    filter (file %in% c("_0001", "_0002", "_0007", "_0011")) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (C or both A and C)
+        stim = case_when(
+            file %in% c("_0001", "_0002") ~ if_else(sweep <= 10, "AC", "C"),
+            file %in% c("_0007", "_0011") ~ if_else(sweep <= 7, "AC", "C")
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0001", "_0002", "_0007") ~ "control",
+            file %in% c("_0011") ~ "noradrenalin"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+
+## 2023_03_22_1
+
+```{r import3}
+
+files <- list.files("../data/2023-03-22_1/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`)
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2023_03_22_1}
+
+# 2023-03-22_1
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # "_0013" file have changing stimulus and not suitable for compare 
+    filter (file != "_0013") %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        stim = if_else(
+            file %in% c("_0012", "_0017", "_0023"),
+            "A",
+            case_when(
+                file %in% c("_0011", "_0016") ~ if_else(sweep <= 10, "AC", "C"),
+                file == "_0024" ~ if_else(sweep <= 9, "AC", "C"),
+                file == "_0025" ~ "C"
+            )
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0011", "_0012", "_0016", "_0017") ~ "control",
+            file %in% c("_0023", "_0024", "_0025") ~ "noradrenalin"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## 2023_03_22_2
+
+```{r import4}
+
+files <- list.files("../data/2023-03-22_2/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`)
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2023_03_22_2}
+
+# 2023-03-22_2
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # only the files with AC or C stim, there is no recordings of 
+    # A-stim in Noradrenaline so no need to import it
+    filter (file %in% c("_0032", "_0036", "_0037")) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (C or both)
+        stim = if_else(sweep <= 10, "AC", "C"),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file == "_0032" ~ "control",
+            file == "_0036" ~ "noradrenalin",
+            file == "_0037" ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## 2025_03_07
+
+```{r import5}
+
+files <- list.files("../data/2025_03_07/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, 
+           time_s = `Time [s]`, 
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+           )
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+```{r _2025_03_07}
+
+# 2025-03-07
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # only files with whole cell VC recordings, no Cell Attach (CA)
+    # for "_0015" ("dlf protocol") select only first sweeps without DLF stim train
+    filter ((file == ("_0015") & sweep <= 7) | file == ("_0016")) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = "AC",
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file == "_0015" ~ "control",
+            file == "_0016" ~ "noradrenalin"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## 2025_03_12
+
+```{r import6}
+
+files <- list.files("../data/2025_03_12/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, 
+           time_s = `Time [s]`, 
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+           )
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+```{r _2025_03_12}
+
+# 2025-03-12
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # only files with normal protocol, not "DLF"
+    # for "_0008" only recordings before NA addition were included
+    filter (file %in% c("_0006", "_0009") | (file == "_0008" & sweep <= 10)) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = if_else(sweep <= 10, "AC", "C"),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0006", "_0008") ~ "control",
+            file == "_0009" ~ "noradrenalin"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## 2025_03_24
+
+```{r import7}
+
+files <- list.files("../data/2025_03_24/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, 
+           time_s = `Time [s]`, 
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+           )
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2025_03_24}
+
+# 2025-03-24
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # only files with normal protocol, not "DLF"
+    # for "_0010" only recordings before NA addition were included
+    filter (
+        file %in% c("_0008", "_0011", "_0013") | 
+            (file == "_0010" & sweep <= 15)
+        ) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file %in% c("_0008", "_0011", "_0013") ~ if_else(sweep <= 10, "AC", "C"),
+            file == "_0010" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0008", "_0010") ~ "control",
+            file == "_0011" ~ "noradrenalin",
+            file == "_0013" ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+
+## 2025_03_25
+
+```{r import8}
+
+files <- list.files("../data/2025_03_25/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, 
+           time_s = `Time [s]`, 
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+           )
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2025_03_25}
+
+# 2025-03-25
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # only files with normal protocol, not "DLF"
+    # for "_0012" only recordings before NA addition were included
+    filter (
+        file %in% c("_0007", "_0011", "_0013", "_0014", "_0015") | 
+            (file == "_0012" & sweep <= 10)
+        ) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file %in% c("_0007", "_0013", "_0014", "_0015") ~ if_else(sweep <= 10, "AC", "C"),
+            file == "_0011" ~ if_else(sweep <= 13, "AC", "C"),
+            file == "_0012" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0007", "_0011", "_0012") ~ "control",
+            file == "_0013" ~ "noradrenalin",
+            file %in% c("_0014", "_0015") ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+
+## 2025_05_02
+
+```{r import9}
+
+files <- list.files("../data/2025_05_02/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, 
+           time_s = `Time [s]`, 
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+           )
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+```{r _2025_05_02}
+
+# 2025-05-02
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # for "_0006" only recordings before NA addition were included
+    filter ( ! (file == "_0006" & sweep > 10)) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file == "_0005" ~ if_else(sweep <= 17, "AC", "C"),
+            file == "_0006" ~ "C",
+            file == "_0007" ~ if_else(sweep <= 18, "AC", "C"),
+            file == "_0008" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0005", "_0006") ~ "control",
+            file == "_0007" ~ "noradrenalin",
+            file == "_0008" ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+
