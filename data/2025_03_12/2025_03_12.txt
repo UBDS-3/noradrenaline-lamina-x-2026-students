@@ -1,0 +1,51 @@
+Rat P12
+
+Lamina X preparation
+
+stimulators:
+0001 -- DLF  mm (upper quadrant)
+0010 -- Root L4  mm
+
+CELL 1
+0002 CA-0mV L4 stim 1ms 150uA - from sweep 6
+0003 VC-70mV L4 stim 1ms 150uA - from sweep 6
+
+CELL 2
+0004 CA-0mV L4 stim 1ms 150uA - from sweep 12
+
+0005 CA-0mV conditioning train  
+	DLF stim 1ms +150uA 20HZ 8s	first (conditioning)
+	L4 stim 1ms +150uA	last (conditioned)
+
+	sweeps 1-5  last
+	sweeps 6-12 first + last
+	sweeps 13-20 last
+
+0006 VC-70mV L4 stim 1ms 150uA - from sweep 11
+
+0007 VC-70mV conditioning train  
+	DLF stim 1ms +150uA 20HZ 8s	first (conditioning)
+	L4 stim 1ms +150uA	last (conditioned)
+
+	sweeps 1-5  last
+	sweeps 6-12 first + last
+	sweeps 13-20 last
+
+0008 VC-70mV L4 stim 1ms 150uA 
+on 10th sweep (20:53) NA 20uM added
+
+Cell detached and spontaneously reattached
+
+0009 VC-70mV L4 stim 1ms 150uA - from sweep 11
+
+0010 VC-70mV conditioning train  
+	DLF stim 1ms +150uA 20HZ 8s	first (conditioning)
+	L4 stim 1ms +150uA	last (conditioned)
+
+	sweeps 1-5  last
+	sweeps 6-7
+cell detached
+
+
+
+
