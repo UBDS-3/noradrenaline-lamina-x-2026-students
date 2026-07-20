@@ -1,0 +1,39 @@
+---
+title: "Import Data 2023-03-07"
+author: "Andrii Hovorov"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+---
+
+## About 
+This is Qmd document for importing Noradrenaline project patch data
+
+```{r setup}
+library(readABF)
+library(tidyverse)
+```
+
+## Cell: 2023_03_07
+
+First, let's just import one file
+
+```{r import_file}
+
+example_file <- readABF("../data/2023-03-07/2023_03_07_0001.abf")
+
+```
+
+
+```{r}
+
+example_file
+
+```
+
