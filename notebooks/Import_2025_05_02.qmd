@@ -1,0 +1,157 @@
+---
+title: "Import_2025_05_02"
+author: "Ivan Blashchak"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    
+execute:
+  warning: false
+  message: false
+---
+
+## About
+
+This is .Qmd document for importing patch clamp data for cell 2025_05_02
+
+
+```{r setup}
+
+# install.packages("readABF")
+library(readABF)
+library(tidyverse)
+library(DT)
+
+```
+
+## Cell: 2025_05_02
+
+First lets just import one file
+
+```{r import_file}
+
+#import one example file
+example_file <- readABF("../data/2025_05_02/2025_05_02_0005.abf")
+
+# make data tidy
+# as.data.frame(example_file, sweep = 1)
+
+extract_sweep <- function(sweep_n, abf){
+    abf |>
+        as.data.frame(sweep = sweep_n) |>
+        mutate(sweep = sweep_n)
+}
+
+# extract_sweep(sweep_n = 1, abf = example_file)
+
+sweep_dfs <- map(1:length(example_file$data), extract_sweep, abf = example_file)
+
+example_df <- bind_rows(sweep_dfs)
+
+abf_to_df <- function(abf){
+    map(1:length(abf$data), extract_sweep, abf = abf) |>
+        bind_rows()
+}
+
+example_df <- abf_to_df(example_file)
+
+datatable(head(example_df, 10000))
+
+knitr::kable(head(example_df))
+```
+
+## Now import all data for the cell
+
+``` {r real_import}
+
+files <- list.files(
+    "../data/2025_05_02/", 
+    pattern = ".abf", 
+    full.names = TRUE
+    )
+
+abfs <- map(files, readABF)
+
+dfs <- map(abfs, abf_to_df)
+
+files |> str_sub(-9,-5)
+
+names(dfs) <- str_sub(files, -9,-5)
+
+# example_df |> rename(
+#     time_s = `Time [s]`,
+#     current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+# )
+
+dfs <- map(
+    dfs, 
+    rename, time_s = `Time [s]`, 
+    current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+    )
+
+dfs <- map(dfs, select, time_s, current_pA, sweep)
+
+all_sweeps <- bind_rows(dfs, .id = "file")
+
+datatable(head(all_sweeps, 10000))
+
+```
+
+## Annotate
+
+Here we add the variables for stimulation type and 
+condition (control, noradrenaline, washout)
+
+```{r annotate}
+
+
+all_sweeps <- all_sweeps %>%
+    # for "_0006" only recordings before NA addition were included
+    filter ( ! (file == "_0006" & sweep > 10)) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file == "_0005" ~ if_else(sweep <= 17, "AC", "C"),
+            file == "_0006" ~ "C",
+            file == "_0007" ~ if_else(sweep <= 18, "AC", "C"),
+            file == "_0008" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0005", "_0006") ~ "control",
+            file == "_0007" ~ "noradrenalin",
+            file == "_0008" ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+datatable(head(all_sweeps, 10000))
+
+
+```
+
+## Session info
+
+```{r info}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+

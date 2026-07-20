@@ -1,0 +1,142 @@
+---
+title: "Import data"
+author: "Ivan"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+---
+
+## This is Qmd document for importing Noradrenaline project patch data
+
+First lets everyone choose the cell
+
+## Cell: ____
+
+```{r setup}
+
+library(readABF)
+library(tidyverse)
+
+```
+
+
+## Now import one file from the cell:
+
+```{r example_import}
+
+
+# import one example file
+example_abf <- readABF("../data/2023-03-02/2023_03_02_0004.abf")
+
+# look at the data (spam the console :-)
+example_abf$data
+
+# make data tidy:
+
+sweep1 <- as.data.frame(example_abf, sweep = 1)
+
+# but we do not want to repeat this 10 times
+# How to make all sweeps in one dataframe?
+# (and we need to add variable "sweep" to know what samples are from what sweeps)
+
+?map()
+
+sweep_count <- length(example_abf$data)
+
+# now lets create our function -- 
+# same like as.data.frame but also adds new variable $sweep
+extract_sweep <- function(sweep_n, abf){
+    abf %>% 
+        as.data.frame(sweep = sweep_n) %>%
+        mutate (sweep = sweep_n)
+}
+
+# and now we can do something like this:
+
+df_list <- map(1:sweep_count, extract_sweep, abf = example_abf)
+    
+example_df <- bind_rows(df_list)
+rm(df_list)
+
+# now we have a way to convert abf object to dataframe. 
+# Why don`t save this method also as function, to use later on other files?
+
+abf_to_df <- function(abf){
+    map(1:length(abf$data), extract_sweep, abf = abf) %>%
+        bind_rows()
+}
+
+```
+
+
+## Can we import all files from the cell at once?
+
+```{r real_import}
+
+files <- list.files("../data/2023-03-02/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, time_s = `Time [s]`, current_pA = `Currnt0Pr [pA]`)
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+
+## Next we need to merge all DFs in one and annotate what data is 
+in each file or sweep
+
+This part will be specific for everyone so i will share this 
+part of code for every cell we have
+
+```{r merging_annotate}
+
+# 2023-03-02
+All_sweeps <- bind_rows(DFs, .id = "file")
+
+All_sweeps <- All_sweeps %>%
+    # "_0006" file have changing stimulus and not suitable for compare 
+    filter (file != "_0006") %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        stim = if_else(
+            file %in% c("_0005", "_0008", "_0011", "_0013"),
+            "A",
+            if_else(
+                sweep <= 7, "AC", "C"
+            )
+        ),
+        # condition of recording (control, Noradrenaline, Washout)
+        cond = case_when(
+            file %in% c("_0004", "_0005", "_0007", "_0008") ~ "control",
+            file %in% c("_0010", "_0011") ~ "noradrenalin",
+            file %in% c("_0012", "_0013") ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+
+
+
+
+
