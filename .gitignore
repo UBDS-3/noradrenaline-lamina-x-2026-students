@@ -65,3 +65,5 @@ raw_data/
 *.tmp
 
 .DS_Store
+
+all_sweeps.tsv
