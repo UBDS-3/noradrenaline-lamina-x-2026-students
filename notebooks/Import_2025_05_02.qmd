@@ -135,10 +135,71 @@ all_sweeps <- all_sweeps %>%
         cond = as.factor(cond),
     )
 
+
 datatable(head(all_sweeps, 10000))
 
 
 ```
+
+
+```{r saving data}
+
+write_tsv(all_sweeps, file = "../all_sweeps.tsv")
+
+
+# saving only part of the data for shiny app to make it faster
+write_tsv(all_sweeps |> filter(between(time_s, 0.1, 0.7)), 
+file = "../all_sweeps_part.tsv")
+
+```
+
+
+## Calculate passive parameters
+
+```{r passive}
+
+# voltage_step data
+voltage_step_data <- all_sweeps |>
+    filter(between(time_s, 0.12, 0.22))
+
+baseline_tw <- c(0.14, 0.16)
+peak_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+
+plot_voltage_step <- ggplot(voltage_step_data, 
+       aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
+       )+
+    geom_line(alpha = 0.6) +
+    geom_vline(xintercept = baseline_tw, color = "lightblue") +
+    geom_vline(xintercept = peak_tw, color = "pink") +
+    geom_vline(xintercept = plateau_tw, color = "lightgreen")
+
+ggplotly(plot_voltage_step)
+
+voltage_step_data |>
+    group_by(file,sweep) |>
+    summarise(
+        baseline_pA = mean(
+            current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
+            ),
+        peak_pA = min(
+            current_pA[between(time_s, peak_tw[1], peak_tw[2])]
+            ) - baseline_pA,
+        plateau_pA = mean(
+            current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
+            ) - baseline_pA,
+        Rs_MOhm = -10000 / peak_pA,
+        Rtotal_MOhm = -10000 / plateau_pA,
+        Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
+        )
+
+
+
+datatable()
+
+
+```
+
 
 ## Session info
 

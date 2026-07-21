@@ -12,7 +12,9 @@ format:
     code-fold: true
 ---
 
-## This is Qmd document for importing Noradrenaline project patch data
+## This is Qmd template for the first day of project
+
+This document covers each step for importing Noradrenaline project patch data
 
 First lets everyone choose the cell
 
