@@ -51,7 +51,7 @@ po/*~
 rsconnect/
 
 # data/
-
+*.tsv
 raw_files/
 
 raw_data/

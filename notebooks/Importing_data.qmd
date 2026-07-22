@@ -1,7 +1,7 @@
 ---
-title: "Importing_data"
+title: "Importing Data"
 author: "maryna"
-date: July 20, 2026
+date: "July 20-22, 2026"
 format:
   html:
     toc: true
@@ -15,102 +15,100 @@ execute:
   message: false
 ---
 
-## Importing data from cell 2023_03_22_2
+# Patch clamp data import: cell 2023_03_22_2
 
-This is .qmd document for importing patch clamp data for cell 2023_03_22_2
-
-Cell: 2023_03_22_2
-
-*(Shortcut for new chunk: ctrl+alt+I)*
-
-The chunk below was made to make `dplyr` overwrite system's `rename` and make `as.factor` work as base one.
+This Quarto (`.qmd`) document outlines the workflow for importing, tidying, and analyzing raw electrophysiological patch-clamp recordings from **cell 2023_03_22_2**.
 
 ```{r setup}
 library(readABF)
 library(conflicted)
 library(dplyr)
+library(DT)
 library(tidyverse)
+library(plotly)
 
-# Tell R to prefer dplyr functions over base/stats
+# Set conflict resolutions to prefer dplyr methods over base/stats
 conflict_prefer("rename", "dplyr")
 conflict_prefer("filter", "dplyr")
 conflicts_prefer(base::as.factor)
-
 ```
 
-Firstly, import one file. To make data tidy we use `as.data.frame.`The file contains several sweeps, so we need to specify which one. Here `sqrt` is an argument and not a function, therefore no brackets needed. Function `map` uses the second argument as a function that applies to the first one, `map` always return a list.
+## Single file processing
+
+We begin by importing a single Axon Binary Format (`.abf`) file to verify sweep extraction logic. Because ABF files contain multiple sweeps, each sweep is coerced into a tidy data frame using `as.data.frame(sweep = ...)` and annotated with its corresponding sweep number.
+
+Here, `sqrt` is passed as a function argument rather than executed immediately (hence no trailing parentheses). The `purrr::map()` function iterates over each sweep index, applying `extract_sweep()` and returning a list of individual data frames.
 
 ```{r import_file}
 example_file <- readABF("../data/2023-03-22_2/2023_03_22_0032.abf")
 
-#map(1:10, sqrt)
-
-extract_sweep <- function(sweep_n, abf){
+# Functional sweep extraction helper
+extract_sweep <- function(sweep_n, abf) {
   abf |> 
     as.data.frame(sweep = sweep_n) |> 
+    # Append the current sweep index as an explicit column for grouping
     mutate(sweep = sweep_n) 
-# We add a variable to the given data frame, which will be usefull
 }
 
-#extract_sweep(5, example_file)
-sweep_dfs <- map(1:length(example_file$data), 
-                 extract_sweep, abf = example_file)
+# Iterate over all sweeps in the file and combine into a single data frame
+sweep_dfs <- map(1:length(example_file$data), extract_sweep, abf = example_file)
 example_df <- bind_rows(sweep_dfs)
-# To combine data frames created by map to one
 
-abf_to_df <- function(abf_given){
+# Wrap processing logic into a general helper for batch importing
+abf_to_df <- function(abf_given) {
   map(1:length(abf_given$data), extract_sweep, abf = abf_given) |> 
     bind_rows()
-    
 }
-#abf_to_df(example_file)
+
 knitr::kable(head(example_df))
 ```
 
-Import all data for the cell.
+## Batch data import and standardization
 
-Function list.files with parameter `full.names = TRUE` it saves the pathes and not just names. `pattern` filters the files by types
+Next, we batch-import all `.abf` recordings associated with this cell directory.
+
+Setting `full.names = TRUE` in `list.files()` preserves the directory paths necessary for file reading, while `pattern = "\\.abf$"` restricts the search to ABF files.
 
 ```{r import}
+# Retrieve full file paths for all ABF files in the target directory
 files <- list.files("../data/2023-03-22_2/", 
-           full.names = TRUE, 
-           pattern = ".abf")
+                   full.names = TRUE, 
+                   pattern = "\\.abf$")
 
+# Read binary files and parse sweeps into tidy data frames
 abfs <- map(files, readABF)
-
 dfs <- map(abfs, abf_to_df)
 
-files |> str_sub(-9, -5) 
-# We get the files' endings to use it as names
-
+# Extract file name suffixes (e.g., "_0032") to serve as list identifiers
 names(dfs) <- files |> 
   str_sub(-9, -5)
-#names(dfs)
 
-# To make the previous name be seen by R we take it in ``, because 
-# it was written badly (with space and special symbols) 
+# Standardize column naming across datasets. Backticks are required for 
+# legacy column names containing spaces and special characters.
 example_df <- example_df |> rename(
   time_s = `Time [s]`,
-  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]" ))
+  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
 )
 
 dfs <- map(
   dfs, 
   rename, 
   time_s = `Time [s]`,
-  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]" ))
-  )
+  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+)
 dfs <- map(dfs, select, time_s, current_pA, sweep)
 
+# Combine datasets and annotate experimental variables
 all_sweeps <- bind_rows(dfs, .id = "file")
+
 all_sweeps <- all_sweeps |> 
-  # only the files with AC or C stim, there is no recordings of 
-  # A-stim in Noradrenaline so no need to import it
-  filter (file %in% c("_0032", "_0036", "_0037")) |> 
+  # Retain only recordings with AC- or C-fiber stimulation.
+  # (A-fiber stimulation was not recorded during the Noradrenaline condition.)
+  filter(file %in% c("_0032", "_0036", "_0037")) |> 
   mutate(
-    # type of fibers stimulated in this file / sweep (C or both)
+    # Classify fiber stimulation type based on sweep protocol (Sweeps 1-10: AC; Sweeps 11+: C)
     stim = if_else(sweep <= 10, "AC", "C"),
-    # condition of recording (control, noradrenaline, washout)
+    # Map file identifiers to experimental treatment conditions
     cond = case_when(
       file == "_0032" ~ "control",
       file == "_0036" ~ "noradrenalin",
@@ -119,7 +117,116 @@ all_sweeps <- all_sweeps |>
   ) |> 
   mutate(
     stim = as.factor(stim),
-    cond = as.factor(cond),
+    cond = as.factor(cond)
+  )
+
+glimpse(all_sweeps)
+
+# Export consolidated dataset to tab-separated values format
+write_tsv(all_sweeps, file = 'all_sweeps.tsv')
+```
+
+## Passive electrical properties
+
+Extract baseline, peak, and steady-state currents during hyperpolarizing voltage steps to evaluate intrinsic passive membrane properties ($R_s$, $R_{total}$, and $R_m$).
+
+```{r passive}
+# Extract the time window containing the hyperpolarizing 
+# test pulse (0.12 s – 0.22 s)
+voltage_step_data <- all_sweeps |> 
+  filter(between(time_s, 0.12, 0.22)) 
+
+# Define analysis time windows (tw) in seconds
+baseline_tw <- c(0.14, 0.16)
+peak_tw     <- c(0.159, 0.165)
+plateau_tw  <- c(0.175, 0.18)
+
+# Visualize test pulse responses with time-window boundaries across conditions
+plot_voltage_step <- ggplot(voltage_step_data, aes(
+  x = time_s, 
+  y = current_pA, 
+  group = interaction(file, sweep),
+  color = file
+)) + 
+  geom_vline(xintercept = baseline_tw, color = 'lightblue') +
+  geom_vline(xintercept = peak_tw, color = 'lightpink') +
+  geom_vline(xintercept = plateau_tw, color = 'darkgreen') +
+  geom_line(alpha = 0.3)
+
+# Render interactive plot for visual quality control
+ggplotly(plot_voltage_step) 
+
+# Compute baseline-subtracted passive properties and resistance metrics
+passive_parameters <- voltage_step_data |> 
+  group_by(file, sweep) |> 
+  summarise(
+    # Baseline current prior to voltage step
+    baseline_pA = mean(current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]),
+    
+    # Peak transient current relative to baseline
+    peak_pA = min(current_pA[between(time_s, peak_tw[1], peak_tw[2])]) - baseline_pA,
+    
+    # Steady-state plateau current
+    plateau_pA = mean(current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]),
+    
+    # Series resistance (Rs), total input resistance (Rtotal), 
+    # and isolated membrane resistance (Rm)
+    Rs_MOhm = -10000 / peak_pA,
+    Rtotal_MOhm = -10000 / plateau_pA,
+    Rmembrane_MOhm = Rtotal_MOhm - Rs_MOhm,
+    .groups = "drop"
+  )
+
+# Define time window for fitting transient decay
+decay_tw <- c(0.1605, 0.175)
+
+# Fit single exponential decay to compute charging time constant (tau)
+decay_fits <- voltage_step_data |>
+  filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |>
+  nest(.by = c(file, sweep)) |>
+  mutate(
+    # Fit asymptotic exponential model using SSasymp 
+    # (formula: current ~ SSasymp(time_s, Asym, R0, lrc))
+    # Wrapped in possibly() to handle potential non-convergence gracefully
+    models = map(
+      data,
+      possibly(\(df) nls(current_pA ~ SSasymp(time_s, Asym, R0, lrc), data = df))
+    ),
+    
+    # Extract estimated model parameters
+    coefs = map(models, coef),
+    
+    # Safely pluck natural log of rate constant (lrc)
+    lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
+    
+    # Calculate time constant (tau = 1 / rate constant = 1 / exp(lrc))
+    tau = 1 / exp(lrc)
+  ) |>
+  select(file, sweep, tau)
+
+# Join decay constants and calculate membrane capacitance (Cm)
+passive_parameters <- passive_parameters |> 
+  left_join(decay_fits, by = c("file", "sweep")) |> 
+  mutate(
+    # First-order approximation using series resistance alone
+    Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+    
+    # Full circuit calculation accounting for parallel parallel Rs and Rm
+    Cmemb_pF = tau / (1 / (1 / Rs_MOhm + 1 / Rmembrane_MOhm)) * 10^6
+  )
+
+# Display tabular summary of key electrophysiological parameters
+passive_parameters |> 
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmembrane_MOhm, Cmemb_pF) |> 
+  datatable(rownames = FALSE)
+
+# Generate pairwise correlation matrix across extracted passive parameters
+passive_parameters |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmembrane_MOhm, Cmemb_pF) |>
+  na.omit() |>
+  GGally::ggpairs(
+    aes(color = file),
+    columns = 3:6
   )
 ```
 
