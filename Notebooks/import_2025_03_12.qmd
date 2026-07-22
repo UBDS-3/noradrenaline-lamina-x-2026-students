@@ -2,26 +2,34 @@
 title: "Cell: 2025_03_12"
 author: "Sofiia Kobryna"
 date: 2026.07.20
-format: html
-toc: true
+format:
+  html:
+    toc: true
     toc-depth: 3
     toc-location: left
     number-sections: true
     theme: cosmo
     code-fold: true
+execute:
+  warning: false
+  message: false
 ---
-## About
+
+# About
 
 This is .qmd 
 
 ```{r}
-
+#install.packages("GGally")
 #install.packages("readABF")
 library(readABF)
 library(tidyverse)
-
+library(DT)
+library(GGally)
+library(plotly)
 ```
-## Cell
+
+# Cell
 
 Lets import our file
 ```{r import_file}
@@ -31,7 +39,7 @@ example_file <-
 
 #make data tidy
 
-as.data.frame(example_file, sweep = 1)
+# as.data.frame(example_file, sweep = 1)
 
 extract_sweep <- function(sweep_n, abf) {
   abf %>% 
@@ -39,7 +47,7 @@ extract_sweep <- function(sweep_n, abf) {
     mutate(sweep = sweep_n)
 }
 
-extract_sweep(sweep_n = 1, abf = example_file)
+# extract_sweep(sweep_n = 1, abf = example_file)
 
 sweep_dfs <- map(1:length(example_file$data), extract_sweep, abf = example_file)
 
@@ -50,10 +58,12 @@ abf_to_df <- function(abf){
     bind_rows()
 }
 
-abf_to_df(example_file)
+head(abf_to_df(example_file))
+
+
 
 ```
-## Import all data for the cell
+# Import all data for the cell
 
 ```{r real_import}
 
@@ -66,10 +76,10 @@ dfs <- map(abfs, abf_to_df)
 files |> str_sub(-9,-5)
 names(dfs) <- files |> str_sub(-9,-5)
 
-example_df |> rename(
-  time_s = `Time [s]`, 
-  current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
-)
+# example_df |> rename(
+#   time_s = `Time [s]`, 
+#   current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+# )
 
 dfs <- map(
   dfs, 
@@ -80,47 +90,365 @@ dfs <- map(
 dfs <- map(dfs, select, time_s, current_pA, sweep)
 all_sweeps <- bind_rows(dfs, .id = "file")
 
+
+
+```
+# Annotate
+
+```{r}
+
+# 2025-03-12
+All_sweeps <- bind_rows(dfs, .id = "file")
+
+All_sweeps <- All_sweeps |>
+    # only files with normal protocol, not "DLF"
+    # for "_0008" only recordings before NA addition were included
+    filter (file %in% c("_0006", "_0009") | (file == "_0008" & sweep <= 10)) |>
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = if_else(sweep <= 10, "AC", "C"),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0006", "_0008") ~ "control",
+            file == "_0009" ~ "noradrenalin"
+        )
+    ) |>
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+## Example data table 
+
+```{r}
+datatable(head(example_df))
+
+knitr::kable(head(example_df))
+
+```
+# Session info
+
+```{r}
+
+sessionInfo()
+
 ```
 
 
 ```{r}
+library(tidyverse)
+write_tsv(All_sweeps, file = "all_sweeps.tsv")
+all_sweeps <- read_tsv("all_sweeps.tsv")
+
 ```
 
+# Calculate passive parametrs
+
+We calculated this passive parameters:
+baseline (pA), serial resistance
+
+## Voltage step plot
 
 ```{r}
+
+voltage_step_data <- all_sweeps |>
+  filter(between(time_s, 0.12, 0.22))
+
+baseline_tw <- c(0.14, 0.16)
+peak_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+decay_tw <- c(0.1605, 0.175)
+
+plot_voltage_step <- ggplot(voltage_step_data,
+    aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
+    )+
+  geom_line(alpha = 0.6) +
+  geom_vline(xintercept = baseline_tw, color = "lightblue") +
+  geom_vline(xintercept = peak_tw, color = "pink") +
+  geom_vline(xintercept = plateau_tw, color = "lightgreen")
+  geom_vline(xintercept = decay_tw, color = "gold")
+
+ggplotly(plot_voltage_step)
+
 ```
 
+## Passive parameters data table
 
 ```{r}
-```
 
+passive_parameters <- voltage_step_data |>
+  group_by(file,sweep) |>
+  summarise(
+    baseline_pA = mean(
+      current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
+      ),
+    peak_pA = min(
+      current_pA[between(time_s, peak_tw[1], peak_tw[2])]
+      ) - baseline_pA,
+    plateau_pA = mean(
+      current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
+      ) - baseline_pA,
+    Rs_MOhm = -10000 / peak_pA,
+    Rtotal_MOhm = -10000 / plateau_pA,
+    Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
+    )
+
+#### This Part of code will be VERY hard to explain ####
+# so we will just copypaste it (it must be robust to errors)
+# and i will give a general overview what it is doing:
+
+decay_fits <- voltage_step_data |>
+  filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |>
+  nest(.by = c(file, sweep)) |>
+  # now we have list-column "data" which will be used for modelling
+  mutate(
+    models = map(
+      data,
+      possibly(\(x) nls(x,
+                        formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
+               )
+      ),
+# using SSasymp() as in this tutorial:
+# https://douglas-watson.github.io/post/2018-09_exponential_curve_fitting/
+# but wrapping with possible() to still run if exponent does not fit
+coefs = map(models, coef), #extracting coeficients from model
+lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
+# pluck() extract value of the lrc from all coefs lists.
+tau = 1/exp(lrc)
+# SSasymp calculate natural Logarithm of Rate Constant (lrc),
+# but we need tau which is 1 / rate constant
+) |>
+  select(file, sweep, tau) # only the variable we needed
+
+#### END OF HARD PART ####
+
+passive_parameters <- passive_parameters |>
+  left_join(decay_fits) |>
+  mutate(
+    Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+    Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+    )
+
+passive_parameters |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+  datatable(rownames = FALSE)
+
+passive_parameters |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+  na.omit() |>
+  GGally::ggpairs(
+    aes(color = file),
+    columns = 3:6
+    )
+
+datatable(passive_parameters)
+
+```
+## AC traces plot:
 
 ```{r}
+
+AC_responses <- all_sweeps|>
+  filter(between(time_s, 0.28, 0.4)) |>
+  filter(stim == "AC")
+bl_area_tw <- c(0.3062, 0.30985)
+area_tw <- c(0.316, 0.382)
+
+ACtraces_plot <- ggplot(AC_responses, aes(
+  x = time_s,
+  y = current_pA,
+  group = interaction(file, sweep),
+  color = file
+  ))+
+  geom_line(
+    alpha = 0.5,
+    show.legend = FALSE) +
+  geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+  geom_vline(xintercept = area_tw, color = "gold")
+
+
+ggplotly(ACtraces_plot)
+
 ```
 
+## AC area data table:
 
 ```{r}
+# 
+# AC_area <- AC_responses |>
+#   group_by(file, sweep) |>
+#   mutate(
+#     current_pA = current_pA - 
+#       mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+#   ) |>
+#   filter(between(time_s, area_tw[1], area_tw[2])) |>
+#   summarise(
+#     total_area = sum(current_pA) * 0.00005
+#   )
+# 
+# datatable(AC_area)
+
+
+calculate_response <- function(data, bl_tw, resp_tw, param) {
+  data |>
+  group_by(file, sweep) |>
+  mutate(
+    current_pA = current_pA - 
+      mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])])
+  ) |>
+  filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+  summarise(
+    parametr = case_when(
+      param == "amplitude" ~ min(current_pA),
+      param == "area" ~ sum(current_pA) * 0.00005,
+      .unmatched = "error"
+      )
+  )
+}
+
+
+AC_area <- calculate_response(
+  AC_responses,
+  bl_tw = bl_area_tw,
+  resp_tw = area_tw,
+  param = "area"
+)
+
+AC_area <- AC_area |>
+  rename(area_pAs = parametr)
+
+datatable(AC_area)
+
+# 
+# bl_mono1_tw <- c(0.3185, 0.3162)
+# mono1_tw <- c(0.31785, 0.3181)
+# 
+# AC_mono1_amps <- AC_responses |>
+#   group_by(file, sweep) |>
+#   mutate(
+#     current_pA = current_pA - 
+#       mean(current_pA[between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])])
+#   ) |>
+#   filter(between(time_s, mono1_tw[1], mono1_tw[2])) |>
+#   summarise(
+#     total_area = min(current_pA)
+#   )
+
 ```
 
-
-
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+## AC mono 1 amplitudes data table:
 
 ```{r}
-1 + 1
+
+# calculate_response <- function(data, bl_tw, resp_tw, param) {
+#   data |>
+#   group_by(file, sweep) |>
+#   mutate(
+#     current_pA = current_pA - 
+#       mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])])
+#   ) |>
+#   filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+#   summarise(
+#     parametr = case_when(
+#       param == "amplitude" ~ min(current_pA),
+#       param == "area" ~ sum(current_pA) * 0.00005,
+#       .unmatched = "error"
+#       )
+#   )
+# }
+
+bl_mono1_tw <- c(0.3156, 0.31605)
+mono1_tw <- c(0.31785, 0.3181)
+
+AC_mono1_amplitudes <- calculate_response(
+  AC_responses,
+  bl_tw = bl_mono1_tw,
+  resp_tw = mono1_tw,
+  param = "amplitude"
+)
+
+AC_mono1_amplitudes <- AC_mono1_amplitudes |>
+  rename(mono1_amp_pA = parametr)
+
+datatable(AC_mono1_amplitudes)
+
 ```
 
-You can add options to executable code like this
+## AC mono 2 amplitudes data table:
 
 ```{r}
-#| echo: false
-2 * 2
+
+bl_mono2_tw <- c(0.31985, 0.32020)
+mono2_tw <- c(0.32095, 0.3218)
+
+AC_mono2_amplitudes <- calculate_response(
+  AC_responses,
+  bl_tw = bl_mono2_tw,
+  resp_tw = mono2_tw,
+  param = "amplitude"
+)
+
+AC_mono2_amplitudes <- AC_mono2_amplitudes |>
+  rename(mono2_amp_pA = parametr)
+
+datatable(AC_mono2_amplitudes)
+
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+## AC mono 3 amplitudes data table:
+
+```{r}
+
+bl_mono3_tw <- c(0.32305, 0.3238)
+mono3_tw <- c(0.32485, 0.32585)
+
+AC_mono3_amplitudes <- calculate_response(
+  AC_responses,
+  bl_tw = bl_mono3_tw,
+  resp_tw = mono3_tw,
+  param = "amplitude"
+)
+
+AC_mono3_amplitudes <- AC_mono3_amplitudes |>
+  rename(mono3_amp_pA = parametr)
+
+datatable(AC_mono3_amplitudes)
+
+```
+
+## All
+
+```{r}
+
+# AC_area <- AC_area |>
+#   rename(area_pAs = parametr)
+
+# AC_mono1_amplitudes <- AC_mono1_amplitudes |>
+#   rename(mono1_amp_pA = parametr)
+
+# AC_mono2_amplitudes <- AC_mono2_amplitudes |>
+#   rename(mono2_amp_pA = parametr)
+
+# AC_mono3_amplitudes <- AC_mono3_amplitudes |>
+#   rename(mono3_amp_pA = parametr)
+
+AC_all_params <- AC_area |>
+  left_join(AC_mono1_amplitudes) |>
+  left_join(AC_mono2_amplitudes) |>
+  left_join(AC_mono3_amplitudes) |>
+  left_join(passive_parameters) 
+
+datatable(AC_all_params)
+
+write_tsv(AC_all_params, file = "../AC_all_params.tsv")
+
+```
+
+```{r}
+
+
+
+```

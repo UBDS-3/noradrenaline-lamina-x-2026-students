@@ -3,6 +3,7 @@ title: "Import data"
 author: "Sofiia"
 format: html
 editor: visual
+toc: true
 ---
 
 ## Quarto
