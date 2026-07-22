@@ -55,6 +55,8 @@ rsconnect/
 raw_files/
 
 raw_data/
+*.tsv
+*.csv
 
 *.zip
 

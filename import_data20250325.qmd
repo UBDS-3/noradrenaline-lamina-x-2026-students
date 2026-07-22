@@ -1,0 +1,368 @@
+---
+title: "import_data20250325"
+author: "olena"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+## About
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+```{r}
+
+```
+
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+library(readABF)
+library(tidyverse)
+library(DT)
+#install.packages("readABF")
+install.packages("plotly")
+```
+
+##Cell: 2025 03 25
+Fiest lets just import 1 file
+
+```{r}
+list.files()
+```
+
+
+```{r import_file}
+import_data_20250325<-readABF("data/2025_03_25/2025_03_25_0007.abf")
+
+
+#The `echo: false` option disables the printing of code (only output is displayed).
+```
+```{r}
+as.data.frame(import_data_20250325, sweep=1)
+```
+
+```{r}
+map(1:10,sqrt)
+```
+```{r}
+extract_sweep<- function(sweep_n, abf){
+  abf |>
+    as.data.frame(sweep=sweep_n) |>
+    mutate(sweep=sweep_n)
+}
+
+extract_sweep(sweep_n=1, abf=import_data_20250325)
+length(import_data_20250325$data)
+
+
+sweep_dfs <- map(1:17,extract_sweep, abf= import_data_20250325 )
+import_data_20250325 <-   bind_rows(sweep_dfs)
+
+abf_to_df <- function(abf){
+  map(1:length(abf$data), extract_sweep, abf=abf) |>
+    bind_rows()
+}
+
+abf_to_df(import_data_20250325)
+
+
+
+```
+## now import all data for the cell
+```{r real_import}
+
+files<-list.files("data/2025_03_25/",
+           pattern= ".abf", 
+           full.names = TRUE)
+
+abfa<-map(files, readABF)
+
+dfs <- map(abfa, abf_to_df)
+
+files |> str_sub(-9,-5)
+
+names(dfs)<-files |> str_sub(-9,-5)
+
+import_data_20250325 |> rename(
+  time_s= `Time [s]`,
+  current_pA= any_of(c("Currnt0Pr [pA]", "Volt0pr [pA]"))
+)
+
+dfs <- map(
+  dfs,
+  dplyr::rename, time_s= `Time [s]`,
+  current_pA= any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+  )
+
+
+dfs<-map(dfs, select, time_s, current_pA, sweep)
+
+all_sweeps <- bind_rows(dfs, .id = "file")
+
+
+
+
+```
+
+## anotate
+
+here we add variables for simulation type and condition (control, noradrenaline, washout)
+
+```{r annotate}
+#| eval: false
+all_sweeps <- all_sweeps %>%
+    # only files with normal protocol, not "DLF"
+    # for "_0012" only recordings before NA addition were included
+    filter (
+        file %in% c("_0011", "_0013", "_0014", "_0015") | 
+            (file == "_0012" & sweep <= 10)
+        ) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file %in% c("_0007", "_0013", "_0014", "_0015") ~ if_else(sweep <= 10, "AC", "C"),
+            file == "_0011" ~ if_else(sweep <= 12, "AC", "C"),
+            file == "_0012" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0007", "_0011", "_0012") ~ "control",
+            file == "_0013" ~ "noradrenalin",
+            file %in% c("_0014", "_0015") ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+
+
+```
+
+## writnig dtaa
+```{r}
+write_tsv(all_sweeps, file="all_sweeps.tsv")
+```
+
+
+## session info 
+```{r info }
+
+sessionInfo()
+install.packages("shiny")
+library(shiny)
+library(bslib)
+install.packages("bslib")
+```
+
+##calculate passive parameters
+```{r passive}
+voltage_step_data<- all_sweeps|>
+  filter(between(time_s,0.12, 0.22))
+baseline_tw<- c(0.14,0.16)
+peal_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+
+voltage_step_data <- all_sweeps |>
+  filter(between(time_s, 0.12, 0.22))
+
+baseline_tw <- c(0.14, 0.16)
+peak_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+
+plot_voltage_step <- ggplot(voltage_step_data,
+   aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
+   )+
+    geom_line(alpha = 0.6) +
+    geom_vline(xintercept = baseline_tw, color = "lightblue") +
+    geom_vline(xintercept = peak_tw, color = "pink") +
+    geom_vline(xintercept = plateau_tw, color = "lightgreen")
+
+ggplotly(plot_voltage_step)
+
+passive_parameters <- voltage_step_data |>
+   group_by(file,sweep) |>
+  summarise(
+      baseline_pA = mean(
+        current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
+        ),
+      peak_pA = min(
+        current_pA[between(time_s, peak_tw[1], peak_tw[2])] 
+        ) - baseline_pA,
+      plateau_pA = mean(
+        current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
+        ) - baseline_pA,
+      Rs_MOhm = -10000 / peak_pA,
+      Rtotal_MOhm = -10000 / plateau_pA,
+      Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
+      )
+
+
+decay_tw <- c(0.1605, 0.175)
+
+voltage_step_data |>
+  group_by(file,sweep)|>
+  summarise(
+    baseline=mean(current_pA[between(time_s, baseline_tw[1], baseline_tw[2])],
+      peak= min(current_pA [between(time_s, peak_tw[1], peak_tw[2] )])-baseline
+      
+  ))
+
+#### This Part of code will be VERY hard to explain ####
+# so we will just copypaste it (it must be robust to errors)
+# and i will give a general overview what it is doing:
+
+decay_fits <- voltage_step_data |>
+  filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |>
+  nest(.by = c(file, sweep)) |>
+# now we have list-column "data" which will be used for modelling
+mutate(
+  models = map(
+    data,
+    possibly(\(x) nls(x,
+                 formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
+             )
+    ),
+
+coefs = map(models, coef), #extracting coeficients from model
+lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
+# pluck() extract value of the lrc from all coefs lists.
+tau = 1/exp(lrc)
+# SSasymp calculate natural Logarithm of Rate Constant (lrc),
+# but we need tau which is 1 / rate constant
+) |>
+select(file, sweep, tau) # only the variable we needed
+
+#### END OF HARD PART ####
+
+passive_parameters <- passive_parameters |>
+  left_join(decay_fits) |>
+  mutate(
+    Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+   Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+  )
+
+
+passive_parameters |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF)|>
+  datatable(rownames= FALSE)
+
+
+passive_parameters|>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+  na.omit() |>
+  GGally::ggpairs(
+    aes(color = file),
+    columns = 3:6
+    )
+##install.packages("GGally")
+
+
+
+
+
+
+
+
+```
+
+##post response
+```{r}
+AC_responses<-all_sweeps |>
+  filter(between (time_s, 0.28, 0.4)) |>
+  filter(stim == "AC")
+
+bl_area_tw<- c(0.285, 0.2935)
+area_tw<- c(0.3045, 0.386)
+
+ACtraces_plot <- ggplot(AC_responses, aes(
+  x=time_s,
+  y=current_pA,
+  group= interaction(file, sweep),
+  color=file
+))+
+  geom_line(# show.legend = FALSE,
+            alpha = 0.5,
+            )+
+  geom_vline(xintercept = bl_area_tw, color= "lightblue")+
+  geom_vline(xintercept = area_tw, color = "pink")
+ggplotly(ACtraces_plot)
+ 
+
+AC_area <- AC_responses|>
+ group_by (file, sweep) |>
+   mutate(
+    current_pA= current_pA - mean(current_pA[between(time_s, bl_area_tw[1],
+                                                     bl_area_tw[2])
+                                             ])
+  )|>
+  filter(between(time_s, area_tw[1], area_tw[2]))|>
+  summarise(
+    total_area = sum(current_pA)*0.00005
+  )
+bl_mono1_tw<- c (0.305, 0.30245)
+mono1_tw <-  c( 0.3057, 0.3085)
+
+# AC_mono1_amplts <- AC_responses|>
+#  group_by (file, sweep) |>
+#    mutate(
+#     current_pA= current_pA - mean(current_pA[between(time_s, bl_mono1_tw[1],
+#                                                      bl_mono1_tw[2])
+#                                              ]))|>
+#  filter(between(time_s, mono1_tw[1], mono1_tw[2]))|>
+#   summarise(
+#     amplitude_area =min(current_pA)
+#     
+#   )
+calculate_response<-function (data, baseline_tw, resp_tw, param) {
+  data|>
+    mutate(
+    current_pA= current_pA - mean(current_pA[between(time_s, bl_tw[1],
+                                                     bl_tw[2])
+                                             ]))|>
+ filter(between(time_s, resp_tw[1], resp_tw[2]))|>
+  ssummarise(
+    parameter = case_when(
+      param == "amplitude" ~ min(current_pA), 
+      param == "area" ~ sum(current_pA) * 0.00005,
+      .unmatched = "error"
+      )
+    )
+}
+
+
+AC_all_params <- c(AC_area) |> 
+  left_join( AC_mono1_amplitude)|>
+left_join(AC_mono2_amplitude)|>
+  left_join(AC_mono3_amplitude)|>
+  left_join(passive_parameters)
+  
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
