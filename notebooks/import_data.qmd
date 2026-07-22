@@ -25,6 +25,7 @@ This is Qmd document for importing Noradrenaline project patch data
 library(readABF)
 library(tidyverse)
 library(DT)
+library(plotly)
 ```
 
 ## Cell: 2023_03_07
@@ -111,7 +112,7 @@ all_sweeps <- bind_rows(dfs, .id = "file")
 
 ```
 
-## Add parsed annotation from .txt file 
+## Add parsed annotation from .txt file
 
 Here we add the variables for stimulation tyoe and condition (control, noradrenaline, washout)
 
@@ -153,8 +154,18 @@ write_tsv(all_sweeps, file = "all_sweeps.tsv")
 
 ```
 
-
 ## Calculate passive parameters
+
+Calculated the next passive parameters:
+
+- **baseline**: mean current before the step
+- **peak**: baseline-subtracted current at the capacitive transient
+- **plateau_pA**: baseline-subtracted current at steady state
+- **Rs_MOhm**: series (access) resistance, from the peak transient
+- **Rtotal_MOhm**: total resistance (series + membrane), from the plateau
+- **Rmemb_MOhm**: membrane resistance, obtained by subtracting Rs from Rtotal
+- **Cmemb_approx_pF**: a simplified approximation using only Rs (valid when Rmemb \>\> Rs, so the parallel combination is dominated by Rs)
+- **Cmemb_pF**: a more accurate estimate using the **parallel combination** of Rs and Rmemb (the actual resistance the capacitor charges through), since Rs and Rmemb form a parallel RC circuit from the capacitor's perspective
 
 ```{r passive}
 
@@ -164,6 +175,7 @@ voltage_step_data <- all_sweeps |>
 baseline_tw <- c(0.14, 0.16)
 peak_tw <- c(0.159, 0.165)
 plateau_tw <- c(0.180, 0.198)
+decay_tw <- c(0.1605, 0.175)
 
 plot_voltage_step <- ggplot(voltage_step_data, 
        aes(x = time_s, 
@@ -174,11 +186,12 @@ plot_voltage_step <- ggplot(voltage_step_data,
     geom_vline(xintercept = baseline_tw, color = "lightblue") +
     geom_vline(xintercept = peak_tw, color = "pink") +
     geom_vline(xintercept = plateau_tw, color = "green") +
+    geom_vline(xintercept = decay_tw, color = "gold") +
     geom_line(alpha = 0.6)
 
 ggplotly(plot_voltage_step)
 
-voltage_step_data |> 
+passive_parameters <- voltage_step_data |> 
     group_by(file, sweep)  |>
     summarise(
         baseline = mean(current_pA[between(
@@ -192,12 +205,155 @@ voltage_step_data |>
         plateau_pA = mean(current_pA[between(
             time_s, 
             plateau_tw[1], 
-            plateau_tw[2])]),
+            plateau_tw[2])]) - baseline,
         Rs_MOhm = -10000/peak,
         Rtotal_MOhm = -10000/ plateau_pA,
         Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
     )
 
+#### This Part of code will be VERY hard to explain ####
+# so we will just copypaste it (it must be robust to errors)
+# and i will give a general overview what it is doing:
+
+decay_fits <- voltage_step_data |>
+    filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |>
+    nest(.by = c(file, sweep)) |>
+    # now we have list-column "data" which will be used for modelling
+    mutate(
+        models = map(
+            data,
+            possibly(\(x) nls(x,
+                              formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
+                     )
+            ),
+        # using SSasymp() as in this tutorial:
+        # https://douglas-watson.github.io/post/2018-09_exponential_curve_fitting/
+        # but wrapping with possible() to still run if exponent does not fit
+        coefs = map(models, coef), #extracting coeficients from model
+        lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
+        # pluck() extract value of the lrc from all coefs lists.
+        tau = 1/exp(lrc)
+        # SSasymp calculate natural Logarithm of Rate Constant (lrc),
+        # but we need tau which is 1 / rate constant
+        ) |>
+    select(file, sweep, tau) # only the variable we needed
+
+ #### END OF HARD PART ####
+
+passive_parameters <- passive_parameters |>
+    left_join(decay_fits) |>
+    mutate(
+        Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+        Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+    )
+
+passive_parameters |>
+    select(file, sweep, baseline, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    datatable(rownames = FALSE)
+
+passive_parameters |>
+    select(file, sweep, baseline, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    na.omit() |>
+    filter(file != "_0011") |>
+    GGally::ggpairs(
+        aes(color = file),
+        columns = 3:6
+    )
+
+```
+
+### Postsynaptic responces to AC stimulation
+
+```{r}
+
+AC_responses <- all_sweeps |>
+    filter(between(time_s, 0.28, 0.4)) |>
+    filter(stim == "AC")
+
+# set timw windows for total area of response
+bl_area_tw <- c(0.30660, 0.30965)
+area_tw <- c(0.31510, 0.39105)
+
+# quick plotly to check time windows
+ACtraces_plot <- ggplot(
+    AC_responses,
+    aes(
+        x = time_s,
+        y = current_pA,
+        group = interaction(file, sweep),
+        color = file
+    )) +
+    geom_line(
+        alpha = 0.6,
+        show.legend = FALSE
+        ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "pink")
+    
+ggplotly(ACtraces_plot)
+
+AC_area <- AC_responses  |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA - mean(current_pA[
+            between(time_s, bl_area_tw[1], bl_area_tw[2])
+            ])
+    ) |>
+    filter(between(time_s, area_tw[1], area_tw[2])) |>
+    summarise(
+        total_area_pAs = sum(current_pA) * 0.00005
+    )
+
+bl_mono1_tw <- c(0.31350, 0.31450)
+mono1_tw <- c(0.31920, 0.32020)
+
+AC_mono1_amplts <- AC_responses  |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA - mean(current_pA[
+            between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])
+            ])
+    ) |>
+    filter(between(time_s, mono1_tw[1], mono1_tw[2])) |>
+    summarise(
+        mono1_amplitude_pA = min(current_pA)
+    )
+
+
+calculate_response <- function(data, bl_tw, resp_tw, param) {
+    data  |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA - mean(current_pA[
+            between(time_s, bl_tw[1], bl_tw[2])
+            ])
+    ) |>
+    filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+    summarise(
+        parameter = case_when(
+            param == "amplitude" ~ min(current_pA), 
+            param == "area" ~ sum(current_pA) * 0.00005,
+            .unmatched = "error"
+        )
+    )
+}
+
+calculate_response(
+    AC_responses, 
+    bl_tw = bl_mono1_tw,
+    resp_tw = mono1_tw,
+    param = "amplitude"
+    )
+
+
+AC_all_params <- AC_area |>
+    left_join(AC_mono1_amplts) |>
+    left_join(passive_parameters)
+    
+```
+
+```{r}
+write_tsv(AC_all_params, file = "../AC_all_params.tsv")
 ```
 
 
@@ -206,4 +362,3 @@ voltage_step_data |>
 ```{r session_info}
 sessionInfo()
 ```
-
