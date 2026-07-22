@@ -12,7 +12,7 @@ library(bslib)
 # read all_sweeps file
 
 all_sweeps <- read_tsv("all_sweeps_part.tsv")
-window_df <- all_sweeps |> filter(between(time_s, 0.3, 0.4))
+window_df <- all_sweeps |> filter(between(time_s, 0.3, 0.35))
 
 file_choices <- levels(factor(window_df$file))
 cond_choices <- levels(factor(window_df$cond))

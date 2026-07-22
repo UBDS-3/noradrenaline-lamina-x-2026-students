@@ -1,0 +1,291 @@
+---
+title: "Import_2025_05_02"
+author: "Ivan Blashchak"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    
+execute:
+  warning: false
+  message: false
+---
+
+## About
+
+This is .Qmd document for importing patch clamp data for cell 2025_05_02
+
+
+```{r setup}
+
+# install.packages("readABF")
+library(readABF)
+library(tidyverse)
+library(plotly)
+library(DT)
+
+```
+
+## Cell: 2025_05_02
+
+First lets just import one file
+
+```{r import_file}
+
+#import one example file
+example_file <- readABF("../data/2025_05_02/2025_05_02_0005.abf")
+
+# make data tidy
+# as.data.frame(example_file, sweep = 1)
+
+extract_sweep <- function(sweep_n, abf){
+    abf |>
+        as.data.frame(sweep = sweep_n) |>
+        mutate(sweep = sweep_n)
+}
+
+# extract_sweep(sweep_n = 1, abf = example_file)
+
+sweep_dfs <- map(1:length(example_file$data), extract_sweep, abf = example_file)
+
+example_df <- bind_rows(sweep_dfs)
+
+abf_to_df <- function(abf){
+    map(1:length(abf$data), extract_sweep, abf = abf) |>
+        bind_rows()
+}
+
+example_df <- abf_to_df(example_file)
+
+datatable(head(example_df, 10000))
+
+knitr::kable(head(example_df))
+```
+
+## Now import all data for the cell
+
+``` {r real_import}
+
+files <- list.files(
+    "../data/2025_05_02/", 
+    pattern = ".abf", 
+    full.names = TRUE
+    )
+
+abfs <- map(files, readABF)
+
+dfs <- map(abfs, abf_to_df)
+
+files |> str_sub(-9,-5)
+
+names(dfs) <- str_sub(files, -9,-5)
+
+# example_df |> rename(
+#     time_s = `Time [s]`,
+#     current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+# )
+
+dfs <- map(
+    dfs, 
+    rename, time_s = `Time [s]`, 
+    current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+    )
+
+dfs <- map(dfs, select, time_s, current_pA, sweep)
+
+all_sweeps <- bind_rows(dfs, .id = "file")
+
+datatable(head(all_sweeps, 10000))
+
+```
+
+## Annotate
+
+Here we add the variables for stimulation type and 
+condition (control, noradrenaline, washout)
+
+```{r annotate}
+
+
+all_sweeps <- all_sweeps %>%
+    # for "_0006" only recordings before NA addition were included
+    filter ( ! (file == "_0006" & sweep > 10)) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file == "_0005" ~ if_else(sweep <= 17, "AC", "C"),
+            file == "_0006" ~ "C",
+            file == "_0007" ~ if_else(sweep <= 18, "AC", "C"),
+            file == "_0008" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0005", "_0006") ~ "control",
+            file == "_0007" ~ "noradrenalin",
+            file == "_0008" ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+
+datatable(head(all_sweeps, 10000))
+
+
+```
+
+
+```{r saving data}
+
+write_tsv(all_sweeps, file = "../all_sweeps.tsv")
+
+
+# saving only part of the data for shiny app to make it faster
+write_tsv(all_sweeps |> filter(between(time_s, 0.1, 0.7)), 
+file = "../all_sweeps_part.tsv")
+
+```
+
+
+## Calculate passive parameters
+
+```{r passive}
+
+# saving only part of data with voltage step to work with
+voltage_step_data <- all_sweeps |>
+    filter(between(time_s, 0.12, 0.22))
+
+#setting time windows
+baseline_tw <- c(0.14, 0.16)
+peak_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+decay_tw <- c(0.1605, 0.175)
+
+
+# checking time windows
+plot_voltage_step <- ggplot(voltage_step_data, 
+       aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
+       )+
+    geom_line(alpha = 0.6) +
+    geom_vline(xintercept = baseline_tw, color = "lightblue") +
+    geom_vline(xintercept = peak_tw, color = "pink") +
+    geom_vline(xintercept = plateau_tw, color = "lightgreen")+
+    geom_vline(xintercept = decay_tw, color = "gold")
+
+ggplotly(plot_voltage_step)
+
+
+# calculating resistances
+passive_parameters <- voltage_step_data |>
+    group_by(file,sweep) |>
+    summarise(
+        baseline_pA = mean(
+            current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
+            ),
+        peak_pA = min(
+            current_pA[between(time_s, peak_tw[1], peak_tw[2])]
+            ) - baseline_pA,
+        plateau_pA = mean(
+            current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
+            ) - baseline_pA,
+        Rs_MOhm = -10000 / peak_pA,
+        Rtotal_MOhm = -10000 / plateau_pA,
+        Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
+        )
+
+# Fit an exponential decay curve to each sweep and extract tau (the membrane time constant).
+# SSasymp() fits: current ~ Asym + (R0 - Asym) * exp(-exp(lrc) * time)
+# lrc is the log of the rate constant, so tau = 1 / exp(lrc)
+# See: https://douglas-watson.github.io/post/2018-09_exponential_curve_fitting/
+
+# Step 1: Keep only the time window where the decay happens
+decay_data <- voltage_step_data |>
+    filter(time_s >= decay_tw[1], time_s <= decay_tw[2])
+
+# Step 2: Find all unique file + sweep combinations
+groups <- decay_data |> distinct(file, sweep)
+
+# Step 3: Loop over every sweep, fit the model, store tau
+results <- vector("list", nrow(groups))  # empty list to collect results
+
+for (i in seq_len(nrow(groups))) {
+    f <- groups$file[i]
+    s <- groups$sweep[i]
+
+    # Subset to just this sweep
+    d <- decay_data |> filter(file == f, sweep == s)
+
+    # Try to fit the exponential; if fitting fails, tau will be NA
+    fit <- tryCatch(
+        nls(formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc), data = d),
+        error = function(e) NULL   # return NULL on error instead of stopping
+    )
+
+    if (is.null(fit)) {
+        tau <- NA
+    } else {
+        lrc_value <- coef(fit)["lrc"]   # extract the log rate constant
+        tau <- 1 / exp(lrc_value)       # convert to time constant (seconds)
+    }
+
+    results[[i]] <- data.frame(file = f, sweep = s, tau = tau)
+}
+
+# Step 4: Stack all per-sweep results into one data frame
+decay_fits2 <- bind_rows(results)
+
+passive_parameters <- passive_parameters %>%
+    left_join(decay_fits %>% select(file, sweep, tau)) %>%
+    mutate(
+        Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+        # tau (s) / R (MOhms) = C (uF), *10^6 to convert to pF
+        Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+        # actually tau depends on both Rseries and Rmemb, 
+        # and from Capacitor point of view they are in parallel 
+        )
+
+# show calculated passive parameters
+passive_parameters |>
+    select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    datatable(rownames = FALSE)
+
+# and nice plot to see them
+passive_parameters |>
+      select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    na.omit() |>
+    GGally::ggpairs(
+          aes(color = file), 
+          columns = 3:6
+          )
+```
+
+## Filtering our data from parameters 
+
+
+
+
+
+
+## Session info
+
+```{r info}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+

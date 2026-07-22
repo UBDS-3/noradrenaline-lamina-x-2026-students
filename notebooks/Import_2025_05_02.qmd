@@ -26,6 +26,7 @@ This is .Qmd document for importing patch clamp data for cell 2025_05_02
 # install.packages("readABF")
 library(readABF)
 library(tidyverse)
+library(plotly)
 library(DT)
 
 ```
@@ -156,27 +157,38 @@ file = "../all_sweeps_part.tsv")
 
 ## Calculate passive parameters
 
+We calculated the next passive parameters :
+
+baseline (pA), serial resistance
+
+
 ```{r passive}
 
-# voltage_step data
+# saving only part of data with voltage step to work with
 voltage_step_data <- all_sweeps |>
     filter(between(time_s, 0.12, 0.22))
 
+#setting time windows
 baseline_tw <- c(0.14, 0.16)
 peak_tw <- c(0.159, 0.165)
 plateau_tw <- c(0.180, 0.198)
+decay_tw <- c(0.1605, 0.175)
 
+# checking time windows
 plot_voltage_step <- ggplot(voltage_step_data, 
        aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
        )+
     geom_line(alpha = 0.6) +
     geom_vline(xintercept = baseline_tw, color = "lightblue") +
     geom_vline(xintercept = peak_tw, color = "pink") +
-    geom_vline(xintercept = plateau_tw, color = "lightgreen")
+    geom_vline(xintercept = plateau_tw, color = "lightgreen")+
+    geom_vline(xintercept = decay_tw, color = "gold")
 
 ggplotly(plot_voltage_step)
 
-voltage_step_data |>
+
+# calculating resistances
+passive_parameters <- voltage_step_data |>
     group_by(file,sweep) |>
     summarise(
         baseline_pA = mean(
@@ -194,11 +206,253 @@ voltage_step_data |>
         )
 
 
+decay_tw <- c(0.1605, 0.175)
 
-datatable()
+#### This Part of code will be VERY hard to explain ####
+# so we will just copypaste it (it must be robust to errors)
+# and i will give a general overview what it is doing:
+
+decay_fits <- voltage_step_data |> 
+    filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |> 
+    nest(.by = c(file, sweep)) |>
+    # now we have list-column "data" which will be used for modelling
+    mutate(
+        models = map(
+            data, 
+            possibly(\(x) nls(x, 
+                              formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
+                     )
+            ),
+        # using SSasymp() as in this tutorial:
+        # https://douglas-watson.github.io/post/2018-09_exponential_curve_fitting/
+        # but wrapping with possible() to still run if exponent does not fit
+        coefs = map(models, coef), #extracting coeficients from model
+        lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)), 
+        # pluck() extract value of the lrc from all coefs lists.
+        tau = 1/exp(lrc) 
+        # SSasymp calculate natural Logarithm of Rate Constant (lrc),
+        # but we need tau which is 1 / rate constant
+        ) |>
+    select(file, sweep, tau) # only the variable we needed
+
+#### END OF HARD PART ####
+
+passive_parameters <- passive_parameters |>
+    left_join(decay_fits) |>
+    mutate(
+        Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+        # tau (s) / R (MOhms) = C (uF), *10^6 to convert to pF
+        
+        Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+        # actually tau depends on both Rseries and Rmemb, 
+        # and from Capacitor point of view they are in parallel 
+        )
+
+
+datatable(passive_parameters)
+
+
+# show calculated passive parameters
+passive_parameters |>
+    select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    datatable(rownames = FALSE)
+
+# and nice plot to see them
+passive_parameters |>
+      select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    na.omit() |>
+    filter(file != "_0008") |>
+    GGally::ggpairs(
+          aes(color = file), 
+          columns = 3:6
+          )
+```
+
+## Calculating the postsynaptic responces
+
+### postsynaptic responces to AC stimulation
+
+```{r ACpostsynaptic}
+
+# saving only part of data with voltage step to work with
+AC_responses <- all_sweeps |>
+    filter(between(time_s, 0.28, 0.4)) |>
+    filter(stim == "AC")
+
+# setting time windows for total area of response
+bl_area_tw <- c(0.285, 0.2935)
+area_tw <- c(0.3045, 0.384)
+
+# quick plotly to check time windows
+ACtraces_plot <- ggplot(AC_responses, aes(
+    x = time_s, 
+    y = current_pA,
+    group = interaction(file, sweep),
+    color = file
+    ))+
+    geom_line(
+        alpha = 0.5,
+        show.legend = FALSE
+        ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "gold")
+
+ggplotly(ACtraces_plot)
+
+
+calculate_response <- function(data, bl_tw, resp_tw, param) {
+    data |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA - 
+            mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])])
+    ) |>
+    filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+    summarise(
+        parameter = case_when(
+            param == "amplitude" ~ min(current_pA),
+            param == "area" ~ sum(current_pA) * 0.00005,
+            .unmatched = "error"
+            )
+    )
+}
+
+bl_mono1_tw <- c(0.3035, 0.3045)
+mono1_tw <- c(0.3075, 0.3085)
+
+AC_mono1_aplitudes <- calculate_response(
+    AC_responses,
+    bl_tw = bl_mono1_tw,
+    resp_tw = mono1_tw,
+    param = "amplitude"
+    )
+
+bl_mono2_tw <- c(0.3075, 0.3085)
+mono2_tw <- c(0.310, 0.314)
+
+AC_mono2_aplitudes <- calculate_response(
+    AC_responses,
+    bl_tw = bl_mono2_tw,
+    resp_tw = mono2_tw,
+    param = "amplitude"
+    )
+
+bl_mono3_tw <- c(0.316, 0.317)
+mono3_tw <- c(0.3175, 0.320)
+
+AC_mono3_aplitudes <- calculate_response(
+    AC_responses,
+    bl_tw = bl_mono3_tw,
+    resp_tw = mono3_tw,
+    param = "amplitude"
+    )
+
+AC_areas <- calculate_response(
+    AC_responses,
+    bl_tw = bl_area_tw,
+    resp_tw = area_tw,
+    param = "area"
+    )
+
+AC_areas <- AC_areas |>
+    rename(area_pAs = parameter)
+
+AC_mono1_aplitudes <- AC_mono1_aplitudes |>
+    rename(mono1_amp_pA = parameter)
+
+AC_mono2_aplitudes <- AC_mono2_aplitudes |>
+    rename(mono2_amp_pA = parameter)
+
+AC_mono3_aplitudes <- AC_mono3_aplitudes |>
+    rename(mono3_amp_pA = parameter)
+
+AC_all_params <- AC_areas |> 
+    left_join(AC_mono1_aplitudes) |>
+    left_join(AC_mono2_aplitudes) |>
+    left_join(AC_mono3_aplitudes) |>
+    left_join(passive_parameters)
+
+write_tsv(AC_all_params, file = "../AC_all_params.tsv")
+
+
+
+
+
 
 
 ```
+
+
+
+```{r old_calc}
+# AC_mono1_amplts <- AC_responses |>
+#     group_by(file, sweep) |>
+#     mutate(
+#         current_pA = current_pA - 
+#             mean(current_pA[between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])])
+#     ) |>
+#     filter(between(time_s, mono1_tw[1], mono1_tw[2])) |>
+#     summarise(
+#         amplitude_pA = min(current_pA)
+#     )
+# 
+# AC_areas <- AC_responses |>
+#     group_by(file, sweep) |>
+#     mutate(
+#         current_pA = current_pA - 
+#             mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+#     ) |>
+#     filter(between(time_s, area_tw[1], area_tw[2])) |>
+#     summarise(
+#         total_area_pAs = sum(current_pA) * 0.00005
+#     )
+
+```
+
+
+### postsynaptic responces to C stimulation
+
+```{r Cpostsynaptic}
+
+
+
+```
+
+
+
+## Filtering our data from parameters 
+
+```{r filtering}
+
+# selecting only the most important variables
+passive_parameters <- passive_parameters |>
+      select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF)
+
+baseline_lims <- c(-200,0)
+Rs_lims_norm <- c(
+    0.9 * median(passive_parameters$Rs_MOhm), 
+    1.1 * median(passive_parameters$Rs_MOhm)
+    )
+Rm_lims <- c(
+    0.5 * median(passive_parameters$Rmemb_MOhm), 
+    2 * median(passive_parameters$Rmemb_MOhm)
+    )
+Cm_lims <- c(
+    0.5 * median(passive_parameters$Cmemb_pF), 
+    2 * median(passive_parameters$Cmemb_pF)
+    )
+
+ggplot(passive_parameters, aes(y = baseline_pA))+
+    geom_boxplot() + 
+    geom_point(aes(group = interaction(file, sweep), x = 0, color = file),
+               position = position_dodge(width = 0.15), size = 2.2
+               )
+
+```
+
+
+
+
 
 
 ## Session info
