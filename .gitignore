@@ -50,6 +50,10 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 
+# big tables
+
+*.tsv
+
 # data/
 
 raw_files/
@@ -66,4 +70,3 @@ raw_data/
 
 .DS_Store
 
-all_sweeps.tsv
