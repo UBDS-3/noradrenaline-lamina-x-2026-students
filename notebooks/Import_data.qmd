@@ -1,0 +1,420 @@
+---
+title: "Your Title Here"
+author: "Your Name"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+---
+
+```{r setup}
+
+library(readABF)
+library(tidyverse)
+library(plotly)
+library(GGally)
+```
+
+
+
+## My cell: 2025_03_25
+
+
+## **Sweep Extraction:** Extracts an individual sweep from an ABF object and converts it into a data frame with a sweep index column.
+## **ABF Conversion:** Iterates through all data sweeps in an ABF structure and binds them into a single unified data frame.
+
+```{r functions}
+
+extract_sweep <- function(sweep_n, abf){
+  abf |>
+    as.data.frame(sweep = sweep_n) |>
+    mutate(sweep = sweep_n)
+  }
+
+
+abf_to_df <- function(abf){
+  map(1:length(abf$data), extract_sweep, abf = abf) |>
+    bind_rows()
+  }
+
+
+```
+
+## **File Import & Naming:** Scans the data directory for `.abf` files, reads them, and assigns short identifier names.
+## **Tidy Transformation:** Converts ABF structures into tidy data frames, standardizes column names, and selects key variables.
+
+
+```{r import_data}
+
+files <- list.files("../data/2025_03_25/", pattern = ".abf", full.names = TRUE)
+
+ABFs <- map(files, readABF)
+
+# making short name for each object like "_0004"
+names(ABFs) <- files %>% str_sub(-9, -5)
+
+# Transforming abf objects to the tidy dataframes
+DFs <- map(ABFs, abf_to_df)
+
+# changing names for variables with non-standard symbols
+DFs <- map(DFs, rename, 
+           time_s = `Time [s]`, 
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
+           )
+
+# select only important variables:
+DFs <- map(DFs, select, time_s, current_pA, sweep)
+
+```
+
+###Data Consolidation & Filtering: Combines individual data frames into a master table and restricts records based on protocol rules.
+
+###Metadata & Factor Labeling: Assigns fiber stimulation types (stim), recording conditions (cond), and converts them into factors.
+
+```{r _2025_03_25}
+
+# 2025-03-25
+all_sweeps <- bind_rows(DFs, .id = "file")
+
+all_sweeps <- all_sweeps %>%
+    # only files with normal protocol, not "DLF"
+  # file "_0007" is wrong type and should be not included
+    # for "_0012" only recordings before NA addition were included
+    filter (
+        file %in% c("_0011", "_0013", "_0014", "_0015") | 
+            (file == "_0012" & sweep <= 10)
+        ) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (A, C or both)
+        # in this cell only AC simulations were performed
+        stim = case_when(
+            file %in% c("_0007", "_0013", "_0014", "_0015") ~ if_else(sweep <= 10, "AC", "C"),
+            file == "_0011" ~ if_else(sweep <= 12, "AC", "C"),
+            file == "_0012" ~ "AC"
+        ),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file %in% c("_0007", "_0011", "_0012") ~ "control",
+            file == "_0013" ~ "noradrenalin",
+            file %in% c("_0014", "_0015") ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+```
+
+
+
+###Voltage Step Filtering & Visualization: Subsets data within the 0.12–0.22 s time window, sets specific time intervals for the baseline, peak, and plateau, and renders an interactive graph using ggplot2 and plotly.
+
+###Passive Parameter Calculation: Groups data by file and sweep to compute average baseline current, peak and plateau amplitudes, series resistance (Rs_MOhm), total resistance, and membrane resistance (Rmemb_MOhm).
+
+###Non-Linear Decay Curve Modeling (tau): Filters the decay region (decay_tw), nests data via nest(.by = c(file, sweep)), and applies non-linear least squares (nls) using the SSasymp function to calculate the time constant (tau).
+
+###Membrane Capacitance Calculation (Cmemb): Merges the modeling results and computes both approximate (Cmemb_approx_pF) and precise (Cmemb_pF) membrane capacitance metrics accounting for parallel resistance dynamics.
+
+
+
+```{r passive}
+voltage_step_data <- all_sweeps |>
+    filter(between(time_s, 0.12, 0.22))
+
+baseline_tw <- c(0.14, 0.16)
+peak_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+
+
+plot_voltage_step <- ggplot(voltage_step_data,
+       aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
+       )+
+    geom_line(alpha = 0.6) +
+    geom_vline(xintercept = baseline_tw, color = "lightblue") +
+    geom_vline(xintercept = peak_tw, color = "pink") +
+    geom_vline(xintercept = plateau_tw, color = "lightgreen")
+
+ggplotly(plot_voltage_step)
+
+passive_parameters <- voltage_step_data |>
+    group_by(file,sweep) |>
+    summarise(
+        baseline_pA = mean(
+            current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
+            ),
+        peak_pA = min(
+            current_pA[between(time_s, peak_tw[1], peak_tw[2])]
+            ) - baseline_pA,
+        plateau_pA = mean(
+            current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
+            ) - baseline_pA,
+        Rs_MOhm = -10000 / peak_pA,
+        Rtotal_MOhm = -10000 / plateau_pA,
+        Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
+        )
+
+
+
+decay_tw <- c(0.1605, 0.175)
+
+#### This Part of code will be VERY hard to explain ####
+# so we will just copypaste it (it must be robust to errors)
+# and i will give a general overview what it is doing:
+
+decay_fits <- voltage_step_data |>
+    filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |>
+    nest(.by = c(file, sweep)) |>
+    # now we have list-column "data" which will be used for modelling
+    mutate(
+        models = map(
+            data,
+            possibly(\(x) nls(x,
+                              formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
+                     )
+            ),
+        # using SSasymp() as in this tutorial:
+        # douglas-watson.github.io/post/2018-09_exponential_curve_fitting
+        # but wrapping with possible() to still run if exponent does not fit
+        coefs = map(models, coef), #extracting coeficients from model
+        lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
+        # pluck() extract value of the lrc from all coefs lists.
+        tau = 1/exp(lrc)
+        # SSasymp calculate natural Logarithm of Rate Constant (lrc),
+        # but we need tau which is 1 / rate constant
+        ) |>
+    select(file, sweep, tau) # only the variable we needed
+
+#### END OF HARD PART ####
+
+
+
+
+
+
+
+passive_parameters <- passive_parameters |>
+  left_join(decay_fits) |>
+  mutate(
+    Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+    # tau (s) / R (MOhm) = C (uF), *10^6 to convert to pF
+    Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+    # actually tau depends on both Rseries and Rmemb,
+    # and from Capacitor point of view they are in parallel
+  )
+
+
+
+
+# show calculated passive parameters
+passive_parameters |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+  DT::datatable(rownames = FALSE)
+
+# and nice plot to see them
+passive_parameters |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+  na.omit() |>
+  GGally::ggpairs(
+    aes(color = file),
+    columns = 3:6
+  )
+```
+
+
+
+```{r}
+
+AC_responses <- all_sweeps |>
+    filter(between(time_s, 0.28, 0.4)) |>
+    filter(stim == "AC")
+
+bl_area_tw <- c(0.305, 0.310)
+area_tw <- c(0.314, 0.398)
+
+bl_motol_tw <- c(0.3140, 0.3145)
+motol_tw <- c(0.3148, 0.325)
+
+ACTtraces_plot <- ggplot(AC_responses, aes(
+    x = time_s,
+    y = current_pA,
+    group = interaction(file, sweep),
+    color = file
+))+
+    geom_line(
+        alpha = 0.5,
+        show.legend = FALSE
+    ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "gold") +
+    geom_vline(xintercept = bl_motol_tw, color = "pink") +
+    geom_vline(xintercept = motol_tw, color = "red")
+
+ggplotly(ACTtraces_plot)
+
+AC_responses |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA -
+            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+    ) |>
+    filter(between(time_s, area_tw[1], area_tw[2])) |>
+    summarise(
+        total_area = sum(current_pA) * 0.00005,
+        .groups = "drop"
+    )
+
+calculate_response <- function(data, bl_tw, resp_tw, param) {
+    data |>
+        group_by(file, sweep) |>
+        mutate(
+            current_pA = current_pA -
+                mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])])
+        ) |>
+        filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+        summarise(
+            parameter = case_when(
+                param == "amplitude" ~ min(current_pA),
+                param == "area" ~ sum(current_pA) * 0.00005,
+                .unmatched = "error"
+            ),
+            .groups = "drop"
+        )
+}
+
+Ac_mono_amplitude <- calculate_response(
+    AC_responses,
+    bl_tw = bl_motol_tw,
+    resp_tw = motol_tw,
+    param = "amplitude"
+)
+```
+```{r}
+# AC_mono1_amplts <- AC_responses |>
+#     group_by(file, sweep) |>
+#     mutate(
+#         current_pA = current_pA -
+#             mean(current_pA[between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])])
+#     ) |>
+#     filter(between(time_s, mono1_tw[1], mono1_tw[2])) |>
+#     summarise(
+#         amplitude_pA = min(current_pA),
+#     )
+# 
+# AC_areas <- AC_responses |>
+#     group_by(file, sweep) |>
+#     mutate(
+#         current_pA = current_pA -
+#             mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+#     ) |>
+#     filter(between(time_s, area_tw[1], area_tw[2])) |>
+#     summarise(
+#         total_area = sum(current_pA) * 0.00005,
+#     )
+```
+
+
+```{r data_consolidation}
+
+AC_areas <- AC_responses |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA -
+            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+    ) |>
+    filter(between(time_s, area_tw[1], area_tw[2])) |>
+    summarise(
+        total_area = sum(current_pA) * 0.00005,
+        .groups = "drop"
+    )
+
+
+Ac_mono_amplitude <- calculate_response(
+    AC_responses,
+    bl_tw = bl_motol_tw,
+    resp_tw = motol_tw,
+    param = "amplitude"
+) |>
+    rename(mono_amplitude = parameter)
+
+
+final_dataset <- passive_parameters |>
+    left_join(AC_areas, by = c("file", "sweep")) |>
+    left_join(Ac_mono_amplitude, by = c("file", "sweep"))
+
+
+final_dataset |>
+    DT::datatable(rownames = FALSE)
+```
+
+
+
+
+
+
+
+```{r correlation_matrix, warning=FALSE, message=FALSE}
+
+final_dataset |>
+    select(file, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF, total_area, mono_amplitude) |>
+    na.omit() |>
+    GGally::ggpairs(
+        aes(color = file, alpha = 0.6),
+        columns = 2:7,
+        title = "Матриця співвідношень параметрів клітини",
+        progress = FALSE
+    )
+```
+
+
+
+
+
+
+
+```{r scatter_trend}
+plot_correlation <- ggplot(final_dataset, aes(x = mono_amplitude, y = total_area, color = file)) +
+    geom_point(size = 3, alpha = 0.7) +
+    # Додавання загальної лінії лінійного тренду (без поділу на файли)
+    geom_smooth(aes(group = 1), method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+    theme_minimal() +
+    labs(
+        title = "Співвідношення амплітуди та загальної площі",
+        x = "Амплітуда моносинаптичної відповіді (pA)",
+        y = "Загальна площа (pA*s)"
+    )
+
+ggplotly(plot_correlation)
+```
+
+
+
+
+
+```{r numeric_correlation}
+numeric_correlation_matrix <- final_dataset |>
+    # 1. Зняття групування для коректної роботи select()
+    ungroup() |> 
+    mutate(
+        # 2. Конвертація текстового результату case_when() назад у число
+        mono_amplitude = as.numeric(mono_amplitude)
+    ) |>
+    # Відбір лише числових колонок
+    select(where(is.numeric), -sweep) |> 
+    # 3. Використання pairwise замість na.omit() для збереження даних
+    cor(use = "pairwise.complete.obs", method = "pearson")
+
+# Відображення результату у вигляді таблиці з округленням до 3 знаків
+numeric_correlation_matrix |>
+    round(3) |>
+    as.data.frame() |>
+    DT::datatable(options = list(pageLength = 10))
+```
+
+
+

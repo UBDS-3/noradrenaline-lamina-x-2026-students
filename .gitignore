@@ -50,6 +50,10 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 
+*.tsv
+
+*.csv
+
 # data/
 
 raw_files/
