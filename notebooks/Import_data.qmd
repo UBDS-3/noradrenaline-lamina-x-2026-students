@@ -1,6 +1,6 @@
 ---
-title: "Your Title Here"
-author: "Your Name"
+title: "Electrophysiological Data Analysis - Rat P12 Lamina X"
+author: "Anton Pyatochenko"
 date: today
 format:
   html:
@@ -12,409 +12,401 @@ format:
     code-fold: true
 ---
 
-```{r setup}
+## Cell ID: 2025_03_24
 
+---
+
+### Setup and Dependencies
+
+```{r setup, message=FALSE, warning=FALSE}
+# Load required libraries for ABF file parsing, data manipulation, and interactive visualization
 library(readABF)
 library(tidyverse)
 library(plotly)
 library(GGally)
+library(DT)
+
 ```
 
+---
 
-
-## My cell: 2025_03_25
-
-
-## **Sweep Extraction:** Extracts an individual sweep from an ABF object and converts it into a data frame with a sweep index column.
-## **ABF Conversion:** Iterates through all data sweeps in an ABF structure and binds them into a single unified data frame.
+### Core Utility Functions
 
 ```{r functions}
-
-extract_sweep <- function(sweep_n, abf){
+#' Extract an individual sweep from a loaded ABF structure
+#' @param sweep_n Integer index of the target sweep
+#' @param abf Loaded ABF object containing raw data
+#' @return A data frame containing time, current/voltage, and sweep metadata
+extract_sweep <- function(sweep_n, abf) {
   abf |>
     as.data.frame(sweep = sweep_n) |>
     mutate(sweep = sweep_n)
-  }
+}
 
-
-abf_to_df <- function(abf){
+#' Convert all sweeps within an ABF structure into a unified tidy data frame
+#' @param abf Loaded ABF object
+#' @return Consolidated data frame of all sweeps
+abf_to_df <- function(abf) {
   map(1:length(abf$data), extract_sweep, abf = abf) |>
     bind_rows()
-  }
+}
 
+#' Generalized function to calculate response amplitudes or integrated areas
+#' @param data Cleaned synaptic response data frame
+#' @param bl_tw Numeric vector defining the baseline window c(start, end)
+#' @param resp_tw Numeric vector defining the response measurement window c(start, end)
+#' @param param Character string specifying metric type ("amplitude" or "area")
+#' @return A summarized data frame with computed response parameters per sweep
+calculate_response <- function(data, bl_tw, resp_tw, param) {
+  data |>
+    group_by(file, sweep) |>
+    mutate(
+      current_pA = current_pA - mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])], na.rm = TRUE)
+    ) |>
+    filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+    summarise(
+      parameter = case_when(
+        param == "amplitude" ~ min(current_pA, na.rm = TRUE),
+        param == "area"      ~ sum(current_pA, na.rm = TRUE) * 0.00005,
+        .default             = NA_real_
+      ),
+      .groups = "drop"
+    )
+}
 
 ```
 
-## **File Import & Naming:** Scans the data directory for `.abf` files, reads them, and assigns short identifier names.
-## **Tidy Transformation:** Converts ABF structures into tidy data frames, standardizes column names, and selects key variables.
+---
 
+### Data Import and Tidy Transformation
 
 ```{r import_data}
-
-files <- list.files("../data/2025_03_25/", pattern = ".abf", full.names = TRUE)
-
+# Locate and import all binary ABF files from the target directory
+files <- list.files("../data/2025_03_24/", pattern = ".abf", full.names = TRUE)
 ABFs <- map(files, readABF)
 
-# making short name for each object like "_0004"
+# Assign concise file identifiers based on filename substrings
 names(ABFs) <- files %>% str_sub(-9, -5)
 
-# Transforming abf objects to the tidy dataframes
+# Transform ABF list structures into tidy data frames
 DFs <- map(ABFs, abf_to_df)
 
-# changing names for variables with non-standard symbols
+# Standardize non-standard column names across files
 DFs <- map(DFs, rename, 
            time_s = `Time [s]`, 
-           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
-           )
+           current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]")))
 
-# select only important variables:
+# Retain only necessary variables to optimize memory usage
 DFs <- map(DFs, select, time_s, current_pA, sweep)
 
 ```
 
-###Data Consolidation & Filtering: Combines individual data frames into a master table and restricts records based on protocol rules.
+---
 
-###Metadata & Factor Labeling: Assigns fiber stimulation types (stim), recording conditions (cond), and converts them into factors.
+### Data Consolidation, Filtering, and Metadata Assignment
 
-```{r _2025_03_25}
+```{r consolidation}
+# Combine individual file data frames into a single master table
+All_sweeps <- bind_rows(DFs, .id = "file")
 
-# 2025-03-25
-all_sweeps <- bind_rows(DFs, .id = "file")
-
-all_sweeps <- all_sweeps %>%
-    # only files with normal protocol, not "DLF"
-  # file "_0007" is wrong type and should be not included
-    # for "_0012" only recordings before NA addition were included
-    filter (
-        file %in% c("_0011", "_0013", "_0014", "_0015") | 
-            (file == "_0012" & sweep <= 10)
-        ) %>%
+# Filter protocol-specific records and assign experimental conditions and fiber stimulation types
+All_sweeps <- All_sweeps %>%
+    filter(
+        file %in% c("_0008", "_0011", "_0013") | 
+            (file == "_0010" & sweep <= 15)
+    ) %>%
     mutate(
-        # type of fibers stimulated in this file / sweep (A, C or both)
-        # in this cell only AC simulations were performed
         stim = case_when(
-            file %in% c("_0007", "_0013", "_0014", "_0015") ~ if_else(sweep <= 10, "AC", "C"),
-            file == "_0011" ~ if_else(sweep <= 12, "AC", "C"),
-            file == "_0012" ~ "AC"
+            file %in% c("_0008", "_0011", "_0013") ~ if_else(sweep <= 10, "AC", "C"),
+            file == "_0010" ~ "AC"
         ),
-        # condition of recording (control, noradrenaline, washout)
         cond = case_when(
-            file %in% c("_0007", "_0011", "_0012") ~ "control",
-            file == "_0013" ~ "noradrenalin",
-            file %in% c("_0014", "_0015") ~ "washout"
+            file %in% c("_0008", "_0010") ~ "control",
+            file == "_0011" ~ "noradrenalin",
+            file == "_0013" ~ "washout"
         )
     ) %>%
     mutate(
         stim = as.factor(stim),
-        cond = as.factor(cond),
+        cond = as.factor(cond)
     )
 
 ```
 
+---
 
-
-###Voltage Step Filtering & Visualization: Subsets data within the 0.12–0.22 s time window, sets specific time intervals for the baseline, peak, and plateau, and renders an interactive graph using ggplot2 and plotly.
-
-###Passive Parameter Calculation: Groups data by file and sweep to compute average baseline current, peak and plateau amplitudes, series resistance (Rs_MOhm), total resistance, and membrane resistance (Rmemb_MOhm).
-
-###Non-Linear Decay Curve Modeling (tau): Filters the decay region (decay_tw), nests data via nest(.by = c(file, sweep)), and applies non-linear least squares (nls) using the SSasymp function to calculate the time constant (tau).
-
-###Membrane Capacitance Calculation (Cmemb): Merges the modeling results and computes both approximate (Cmemb_approx_pF) and precise (Cmemb_pF) membrane capacitance metrics accounting for parallel resistance dynamics.
-
-
+### Voltage Step Filtering, Passive Parameters, and Membrane Modeling ($\tau$)
 
 ```{r passive}
-voltage_step_data <- all_sweeps |>
+# Filter voltage-step data within the test pulse temporal window
+voltage_step_data <- All_sweeps |>
     filter(between(time_s, 0.12, 0.22))
 
-baseline_tw <- c(0.14, 0.16)
-peak_tw <- c(0.159, 0.165)
-plateau_tw <- c(0.180, 0.198)
+# Define time intervals for baseline, peak, and plateau metrics
+baseline_tw <- c(0.14, 0.155)
+peak_tw     <- c(0.160, 0.165)
+plateau_tw  <- c(0.180, 0.198)
 
-
-plot_voltage_step <- ggplot(voltage_step_data,
-       aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
-       )+
+# Render interactive overview of voltage-step traces
+plot_voltage_step <- ggplot(voltage_step_data, aes(x = time_s, y = current_pA, group = interaction(file, sweep), color = file)) +
     geom_line(alpha = 0.6) +
     geom_vline(xintercept = baseline_tw, color = "lightblue") +
     geom_vline(xintercept = peak_tw, color = "pink") +
-    geom_vline(xintercept = plateau_tw, color = "lightgreen")
+    geom_vline(xintercept = plateau_tw, color = "lightgreen") +
+    theme_minimal() +
+    labs(title = "Voltage Step Traces", x = "Time (s)", y = "Current (pA)")
 
-ggplotly(plot_voltage_step)
+print(ggplotly(plot_voltage_step))
 
+# Compute passive membrane properties (series resistance, total resistance, membrane resistance)
 passive_parameters <- voltage_step_data |>
-    group_by(file,sweep) |>
+    group_by(file, sweep) |>
     summarise(
-        baseline_pA = mean(
-            current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
-            ),
-        peak_pA = min(
-            current_pA[between(time_s, peak_tw[1], peak_tw[2])]
-            ) - baseline_pA,
-        plateau_pA = mean(
-            current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
-            ) - baseline_pA,
-        Rs_MOhm = -10000 / peak_pA,
+        baseline_pA = mean(current_pA[between(time_s, baseline_tw[1], baseline_tw[2])], na.rm = TRUE),
+        peak_pA     = min(current_pA[between(time_s, peak_tw[1], peak_tw[2])], na.rm = TRUE) - baseline_pA,
+        plateau_pA  = mean(current_pA[between(time_s, plateau_tw[1], plateau_tw[2])], na.rm = TRUE) - baseline_pA,
+        Rs_MOhm     = -10000 / peak_pA,
         Rtotal_MOhm = -10000 / plateau_pA,
-        Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
-        )
+        Rmemb_MOhm  = Rtotal_MOhm - Rs_MOhm,
+        .groups     = "drop"
+    )
 
-
-
+# Fit exponential decay curve using non-linear least squares (SSasymp) to extract time constant (tau)
 decay_tw <- c(0.1605, 0.175)
 
-#### This Part of code will be VERY hard to explain ####
-# so we will just copypaste it (it must be robust to errors)
-# and i will give a general overview what it is doing:
-
 decay_fits <- voltage_step_data |>
-    filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |>
+    filter(between(time_s, decay_tw[1], decay_tw[2])) |>
     nest(.by = c(file, sweep)) |>
-    # now we have list-column "data" which will be used for modelling
     mutate(
-        models = map(
-            data,
-            possibly(\(x) nls(x,
-                              formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
-                     )
-            ),
-        # using SSasymp() as in this tutorial:
-        # douglas-watson.github.io/post/2018-09_exponential_curve_fitting
-        # but wrapping with possible() to still run if exponent does not fit
-        coefs = map(models, coef), #extracting coeficients from model
-        lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
-        # pluck() extract value of the lrc from all coefs lists.
-        tau = 1/exp(lrc)
-        # SSasymp calculate natural Logarithm of Rate Constant (lrc),
-        # but we need tau which is 1 / rate constant
-        ) |>
-    select(file, sweep, tau) # only the variable we needed
-
-#### END OF HARD PART ####
-
-
-
-
-
-
-
-passive_parameters <- passive_parameters |>
-  left_join(decay_fits) |>
-  mutate(
-    Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
-    # tau (s) / R (MOhm) = C (uF), *10^6 to convert to pF
-    Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
-    # actually tau depends on both Rseries and Rmemb,
-    # and from Capacitor point of view they are in parallel
-  )
-
-
-
-
-# show calculated passive parameters
-passive_parameters |>
-  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
-  DT::datatable(rownames = FALSE)
-
-# and nice plot to see them
-passive_parameters |>
-  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
-  na.omit() |>
-  GGally::ggpairs(
-    aes(color = file),
-    columns = 3:6
-  )
-```
-
-
-
-```{r}
-
-AC_responses <- all_sweeps |>
-    filter(between(time_s, 0.28, 0.4)) |>
-    filter(stim == "AC")
-
-bl_area_tw <- c(0.305, 0.310)
-area_tw <- c(0.314, 0.398)
-
-bl_motol_tw <- c(0.3140, 0.3145)
-motol_tw <- c(0.3148, 0.325)
-
-ACTtraces_plot <- ggplot(AC_responses, aes(
-    x = time_s,
-    y = current_pA,
-    group = interaction(file, sweep),
-    color = file
-))+
-    geom_line(
-        alpha = 0.5,
-        show.legend = FALSE
-    ) +
-    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
-    geom_vline(xintercept = area_tw, color = "gold") +
-    geom_vline(xintercept = bl_motol_tw, color = "pink") +
-    geom_vline(xintercept = motol_tw, color = "red")
-
-ggplotly(ACTtraces_plot)
-
-AC_responses |>
-    group_by(file, sweep) |>
-    mutate(
-        current_pA = current_pA -
-            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+        models = map(data, possibly(\(x) nls(x, formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc)))),
+        coefs  = map(models, coef),
+        lrc    = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)),
+        tau    = 1 / exp(lrc)
     ) |>
-    filter(between(time_s, area_tw[1], area_tw[2])) |>
-    summarise(
-        total_area = sum(current_pA) * 0.00005,
-        .groups = "drop"
+    select(file, sweep, tau)
+
+# Merge decay time constants and calculate membrane capacitance metrics
+passive_parameters <- passive_parameters |>
+    left_join(decay_fits, by = c("file", "sweep")) |>
+    mutate(
+        Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+        Cmemb_pF        = tau / (1 / (1 / Rs_MOhm + 1 / Rmemb_MOhm)) * 10^6
     )
 
-calculate_response <- function(data, bl_tw, resp_tw, param) {
-    data |>
-        group_by(file, sweep) |>
-        mutate(
-            current_pA = current_pA -
-                mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])])
-        ) |>
-        filter(between(time_s, resp_tw[1], resp_tw[2])) |>
-        summarise(
-            parameter = case_when(
-                param == "amplitude" ~ min(current_pA),
-                param == "area" ~ sum(current_pA) * 0.00005,
-                .unmatched = "error"
-            ),
-            .groups = "drop"
-        )
-}
+# Display interactive table of calculated passive parameters
+passive_parameters |>
+    select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    DT::datatable(rownames = FALSE)
 
-Ac_mono_amplitude <- calculate_response(
-    AC_responses,
-    bl_tw = bl_motol_tw,
-    resp_tw = motol_tw,
-    param = "amplitude"
+```
+
+---
+
+### Quality Control (QC) Filtering
+
+```{r qc_filtering}
+# --- Quality Control (QC) Filtering (Optimized Limits) ---
+
+baseline_lims <- c(-200, 0)
+
+# Послаблюємо межі для Rs (з ±10% до ±25%), щоб файл з норадреналіном не відсіювався через природні коливання
+Rs_lims <- c(
+    0.75 * median(passive_parameters$Rs_MOhm, na.rm = TRUE),
+    1.25 * median(passive_parameters$Rs_MOhm, na.rm = TRUE)
 )
-```
-```{r}
-# AC_mono1_amplts <- AC_responses |>
-#     group_by(file, sweep) |>
-#     mutate(
-#         current_pA = current_pA -
-#             mean(current_pA[between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])])
-#     ) |>
-#     filter(between(time_s, mono1_tw[1], mono1_tw[2])) |>
-#     summarise(
-#         amplitude_pA = min(current_pA),
-#     )
-# 
-# AC_areas <- AC_responses |>
-#     group_by(file, sweep) |>
-#     mutate(
-#         current_pA = current_pA -
-#             mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
-#     ) |>
-#     filter(between(time_s, area_tw[1], area_tw[2])) |>
-#     summarise(
-#         total_area = sum(current_pA) * 0.00005,
-#     )
+
+# Розширюємо межі для опору мембрани та ємності
+Rm_lims <- c(
+    0.4 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE),
+    2.5 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE)
+)
+
+Cm_lims <- c(
+    0.4 * median(passive_parameters$Cmemb_pF, na.rm = TRUE),
+    2.5 * median(passive_parameters$Cmemb_pF, na.rm = TRUE)
+)
+
+# Evaluate records against QC boundary criteria
+passive_parameters <- passive_parameters |>
+    ungroup() |>
+    select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    mutate(
+        QC = between(baseline_pA, baseline_lims[1], baseline_lims[2]) &
+             between(Rs_MOhm, Rs_lims[1], Rs_lims[2]) &
+             between(Rmemb_MOhm, Rm_lims[1], Rm_lims[2]) &
+             between(Cmemb_pF, Cm_lims[1], Cm_lims[2])
+    )
+
+# Visualize normalized parameter distributions for quality control
+plot_filtering <- ggplot(
+    data = passive_parameters |>
+        mutate(
+            bl_pc = baseline_pA / median(baseline_pA, na.rm = TRUE),
+            rs_pc = Rs_MOhm / median(Rs_MOhm, na.rm = TRUE),
+            rm_pc = Rmemb_MOhm / median(Rmemb_MOhm, na.rm = TRUE),
+            cm_pc = Cmemb_pF / median(Cmemb_pF, na.rm = TRUE)
+        ) |>
+        select(file, sweep, bl_pc, rs_pc, rm_pc, cm_pc, QC) |>
+        pivot_longer(cols = c(bl_pc, rs_pc, rm_pc, cm_pc), names_to = "param", values_to = "percentage"),
+    aes(x = param, y = percentage)
+) +
+    geom_boxplot(outliers = FALSE) +
+    geom_point(aes(group = interaction(file, sweep), color = QC), position = position_dodge(0.2)) +
+    geom_line(aes(group = interaction(file, sweep)), position = position_dodge(0.2), alpha = 0.2) +
+    ylim(0, 4) +
+    theme_minimal() +
+    labs(title = "Quality Control Filtering Diagnostics", x = "Parameter", y = "Normalized Value (% of Median)")
+
+print(ggplotly(plot_filtering))
+
+# Filter raw sweep dataset to retain exclusively QC-verified recordings
+keep <- passive_parameters |> filter(QC) |> select(file, sweep)
+sweeps_keep <- All_sweeps |>
+    inner_join(keep, by = c("file", "sweep"))
 ```
 
+---
+
+### Synaptic Responses Analysis and Condition Comparison
+
+```{r synaptic_analysis}
+# Isolate synaptic records within the target time window and filter strictly for AC fiber stimulation
+# synaptic_responses <- sweeps_keep |>
+#     filter(between(time_s, 0.28, 0.40)) |>
+#     filter(stim == "AC")
+synaptic_responses <- sweeps_keep |>
+    filter(between(time_s, 0.28, 0.40)) |>
+    filter(stim == "C")
+# Define optimized time windows for baseline stability and response integration
+bl_start <- 0.290
+bl_end   <- 0.295
+ar_start <- 0.307
+ar_end   <- 0.380
+
+bl_m_st  <- 0.3140
+bl_m_en  <- 0.3148
+m_st     <- 0.3150
+m_en     <- 0.3300
+
+# Visualize individual AC synaptic traces overlaid with analysis boundaries
+synaptic_traces_plot <- ggplot(synaptic_responses, aes(x = time_s, y = current_pA, group = interaction(file, sweep), color = file)) +
+    geom_line(alpha = 0.5, show.legend = FALSE) +
+    geom_vline(xintercept = bl_start, color = "lightblue", linetype = "dashed") +
+    geom_vline(xintercept = bl_end, color = "lightblue", linetype = "dashed") +
+    geom_vline(xintercept = ar_start, color = "gold") +
+    geom_vline(xintercept = ar_end, color = "gold") +
+    theme_minimal() +
+    labs(title = "C Synaptic Responses Overview", x = "Time (s)", y = "Current (pA)")
+
+print(ggplotly(synaptic_traces_plot))
+
+# Normalize AC responses and calculate condition-specific averages for comparative visualization
+synaptic_area_plot <- synaptic_responses |>
+    group_by(file, sweep) |>
+    mutate(current_pA = current_pA - mean(current_pA[between(time_s, bl_start, bl_end)], na.rm = TRUE)) |>
+    ungroup()
+
+synaptic_average_plot <- synaptic_area_plot |>
+    group_by(cond, time_s) |>
+    summarise(current_pA = mean(current_pA, na.rm = TRUE), .groups = "drop")
+
+# Render comparative condition traces plot for C stimulation
+condition_comparison_plot <- ggplot(synaptic_area_plot, aes(x = time_s, y = current_pA, color = cond)) +
+    geom_line(aes(group = interaction(file, sweep)), alpha = 0.1, show.legend = FALSE) +
+    geom_line(data = synaptic_average_plot, aes(group = cond), linewidth = 1.2) +
+    geom_vline(xintercept = bl_start, color = "lightblue", linetype = "dashed") +
+    geom_vline(xintercept = bl_end, color = "lightblue", linetype = "dashed") +
+    geom_vline(xintercept = ar_start, color = "gold") +
+    geom_vline(xintercept = ar_end, color = "gold") +
+    coord_cartesian(ylim = c(-100, 25)) +
+    theme_minimal() +
+    labs(title = "C Synaptic Responses Comparison by Condition", x = "Time (s)", y = "Current (pA)", color = "Condition")
+
+print(ggplotly(condition_comparison_plot))
+```
+
+---
+
+### Data Consolidation and Export
 
 ```{r data_consolidation}
-
-AC_areas <- AC_responses |>
+# Compute total integrated area for synaptic responses
+synaptic_areas <- synaptic_responses |>
     group_by(file, sweep) |>
-    mutate(
-        current_pA = current_pA -
-            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
-    ) |>
-    filter(between(time_s, area_tw[1], area_tw[2])) |>
-    summarise(
-        total_area = sum(current_pA) * 0.00005,
-        .groups = "drop"
-    )
+    mutate(current_pA = current_pA - mean(current_pA[between(time_s, bl_start, bl_end)], na.rm = TRUE)) |>
+    filter(between(time_s, ar_start, ar_end)) |>
+    summarise(total_area = sum(current_pA, na.rm = TRUE) * 0.00005, .groups = "drop")
 
-
-Ac_mono_amplitude <- calculate_response(
-    AC_responses,
-    bl_tw = bl_motol_tw,
-    resp_tw = motol_tw,
+# Extract peak monosynaptic amplitudes
+synaptic_amplitude <- calculate_response(
+    synaptic_responses,
+    bl_tw = c(bl_m_st, bl_m_en),
+    resp_tw = c(m_st, m_en),
     param = "amplitude"
 ) |>
     rename(mono_amplitude = parameter)
 
-
+# Merge passive properties with active synaptic parameters into a final dataset
 final_dataset <- passive_parameters |>
-    left_join(AC_areas, by = c("file", "sweep")) |>
-    left_join(Ac_mono_amplitude, by = c("file", "sweep"))
+    filter(QC) |>
+    left_join(synaptic_areas, by = c("file", "sweep")) |>
+    left_join(synaptic_amplitude, by = c("file", "sweep"))
 
-
+# Display final dataset table
 final_dataset |>
     DT::datatable(rownames = FALSE)
+
+# Export processed parameters to TSV file
+write_tsv(final_dataset, file = "../Cell_2025_03_24_all_params.tsv")
+
 ```
 
+---
 
-
-
-
-
+### Correlation Analysis and Statistical Trends
 
 ```{r correlation_matrix, warning=FALSE, message=FALSE}
-
+# Generate pairwise correlation matrix plot using ggpairs
 final_dataset |>
     select(file, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF, total_area, mono_amplitude) |>
     na.omit() |>
     GGally::ggpairs(
         aes(color = file, alpha = 0.6),
         columns = 2:7,
-        title = "Матриця співвідношень параметрів клітини",
+        title = "Cell Parameter Correlation Matrix",
         progress = FALSE
     )
+
 ```
 
-
-
-
-
-
-
 ```{r scatter_trend}
+# Scatter plot with linear regression trendline evaluating amplitude vs. total area relationship
 plot_correlation <- ggplot(final_dataset, aes(x = mono_amplitude, y = total_area, color = file)) +
     geom_point(size = 3, alpha = 0.7) +
-    # Додавання загальної лінії лінійного тренду (без поділу на файли)
     geom_smooth(aes(group = 1), method = "lm", se = TRUE, color = "black", linetype = "dashed") +
     theme_minimal() +
     labs(
-        title = "Співвідношення амплітуди та загальної площі",
-        x = "Амплітуда моносинаптичної відповіді (pA)",
-        y = "Загальна площа (pA*s)"
+        title = "Monosynaptic Amplitude vs. Total Area Relationship",
+        x = "Monosynaptic Amplitude (pA)",
+        y = "Total Area (pA*s)"
     )
 
-ggplotly(plot_correlation)
+print(ggplotly(plot_correlation))
+
 ```
 
-
-
-
-
 ```{r numeric_correlation}
+# Compute numeric Pearson correlation matrix table
 numeric_correlation_matrix <- final_dataset |>
-    # 1. Зняття групування для коректної роботи select()
-    ungroup() |> 
-    mutate(
-        # 2. Конвертація текстового результату case_when() назад у число
-        mono_amplitude = as.numeric(mono_amplitude)
-    ) |>
-    # Відбір лише числових колонок
-    select(where(is.numeric), -sweep) |> 
-    # 3. Використання pairwise замість na.omit() для збереження даних
+    ungroup() |>
+    mutate(mono_amplitude = as.numeric(mono_amplitude)) |>
+    select(where(is.numeric), -sweep) |>
     cor(use = "pairwise.complete.obs", method = "pearson")
 
-# Відображення результату у вигляді таблиці з округленням до 3 знаків
 numeric_correlation_matrix |>
     round(3) |>
     as.data.frame() |>
     DT::datatable(options = list(pageLength = 10))
+
 ```
-
-
 
