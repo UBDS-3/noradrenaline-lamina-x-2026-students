@@ -14,6 +14,27 @@ Each student's work is published automatically from their own branch.
 
 ---
 
+Import_2025_05_02_files
+
+```{=html}
+<div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-4 mt-1">
+
+  <div class="col">
+    <div class="card h-100 shadow-sm">
+      <div class="card-body d-flex flex-column align-items-center text-center p-4">
+        <div style="font-size:2.2rem; margin-bottom:.6rem;">🔬</div>
+        <h5 class="card-title mb-3">Project lead: Ivan Blashchak</h5>
+        <a href="Ivan/notebooks/Import_2025_05_02.html"
+           class="btn btn-outline-primary btn-sm mt-auto">
+          Open Notebook
+        </a>
+      </div>
+    </div>
+  </div>
+
+</div>
+```
+
 ```{=html}
 <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-4 mt-1">
 
