@@ -34,12 +34,12 @@ jobs:
             [ -d "$d" ] && cp -r "$d" _deploy/notebooks/
           done
 
-      # Deploy to gh-pages under students/<name>/.
+      # Deploy to gh-pages under student/<name>/ — mirrors the branch naming convention.
       # keep_files: true preserves every other student's directory.
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: _deploy
-          destination_dir: students/${{ steps.info.outputs.student }}
+          destination_dir: student/${{ steps.info.outputs.student }}
           keep_files: true
