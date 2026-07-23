@@ -67,3 +67,6 @@ raw_data/
 *.txt
 
 *.tmp
+
+/.quarto/
+**/*.quarto_ipynb

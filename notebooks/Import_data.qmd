@@ -9,7 +9,11 @@ format:
     toc-location: left
     number-sections: true
     theme: cosmo
-    code-fold: true
+    code-fold: false
+execute:
+  warning: false
+  message: false
+  echo: true
 ---
 
 ## Cell ID: 2025_03_24
@@ -18,11 +22,10 @@ format:
 
 ### Setup and Dependencies
 
-```{r setup, message=FALSE, warning=FALSE}
-# Load required libraries for ABF file parsing, data manipulation, and interactive visualization
+```{r setup}
+# Load required libraries for ABF file parsing, data manipulation, and visualization
 library(readABF)
 library(tidyverse)
-library(plotly)
 library(GGally)
 library(DT)
 
@@ -109,19 +112,20 @@ DFs <- map(DFs, select, time_s, current_pA, sweep)
 # Combine individual file data frames into a single master table
 All_sweeps <- bind_rows(DFs, .id = "file")
 
-# Filter protocol-specific records and assign experimental conditions and fiber stimulation types
+# Filter protocol-specific records and correctly split file _0010 into control and noradrenalin conditions
 All_sweeps <- All_sweeps %>%
     filter(
-        file %in% c("_0008", "_0011", "_0013") | 
-            (file == "_0010" & sweep <= 15)
+        file %in% c("_0008", "_0011", "_0013") | file == "_0010"
     ) %>%
     mutate(
         stim = case_when(
             file %in% c("_0008", "_0011", "_0013") ~ if_else(sweep <= 10, "AC", "C"),
-            file == "_0010" ~ "AC"
+            file == "_0010" ~ if_else(sweep <= 16, "AC", "C")
         ),
         cond = case_when(
-            file %in% c("_0008", "_0010") ~ "control",
+            file == "_0008" ~ "control",
+            file == "_0010" & sweep <= 16 ~ "control",
+            file == "_0010" & sweep >= 17 ~ "noradrenalin",
             file == "_0011" ~ "noradrenalin",
             file == "_0013" ~ "washout"
         )
@@ -137,7 +141,7 @@ All_sweeps <- All_sweeps %>%
 
 ### Voltage Step Filtering, Passive Parameters, and Membrane Modeling ($\tau$)
 
-```{r passive}
+```{r passive, fig.width=9, fig.height=6}
 # Filter voltage-step data within the test pulse temporal window
 voltage_step_data <- All_sweeps |>
     filter(between(time_s, 0.12, 0.22))
@@ -147,7 +151,7 @@ baseline_tw <- c(0.14, 0.155)
 peak_tw     <- c(0.160, 0.165)
 plateau_tw  <- c(0.180, 0.198)
 
-# Render interactive overview of voltage-step traces
+# Render overview of voltage-step traces
 plot_voltage_step <- ggplot(voltage_step_data, aes(x = time_s, y = current_pA, group = interaction(file, sweep), color = file)) +
     geom_line(alpha = 0.6) +
     geom_vline(xintercept = baseline_tw, color = "lightblue") +
@@ -156,7 +160,7 @@ plot_voltage_step <- ggplot(voltage_step_data, aes(x = time_s, y = current_pA, g
     theme_minimal() +
     labs(title = "Voltage Step Traces", x = "Time (s)", y = "Current (pA)")
 
-print(ggplotly(plot_voltage_step))
+print(plot_voltage_step)
 
 # Compute passive membrane properties (series resistance, total resistance, membrane resistance)
 passive_parameters <- voltage_step_data |>
@@ -204,27 +208,12 @@ passive_parameters |>
 
 ### Quality Control (QC) Filtering
 
-```{r qc_filtering}
-# --- Quality Control (QC) Filtering (Optimized Limits) ---
-
+```{r qc_filtering, fig.width=9, fig.height=6}
+# Define empirical acceptance thresholds for stability diagnostics
 baseline_lims <- c(-200, 0)
-
-# Послаблюємо межі для Rs (з ±10% до ±25%), щоб файл з норадреналіном не відсіювався через природні коливання
-Rs_lims <- c(
-    0.75 * median(passive_parameters$Rs_MOhm, na.rm = TRUE),
-    1.25 * median(passive_parameters$Rs_MOhm, na.rm = TRUE)
-)
-
-# Розширюємо межі для опору мембрани та ємності
-Rm_lims <- c(
-    0.4 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE),
-    2.5 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE)
-)
-
-Cm_lims <- c(
-    0.4 * median(passive_parameters$Cmemb_pF, na.rm = TRUE),
-    2.5 * median(passive_parameters$Cmemb_pF, na.rm = TRUE)
-)
+Rs_lims <- c(0.75 * median(passive_parameters$Rs_MOhm, na.rm = TRUE), 1.25 * median(passive_parameters$Rs_MOhm, na.rm = TRUE))
+Rm_lims <- c(0.4 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE), 2.5 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE))
+Cm_lims <- c(0.4 * median(passive_parameters$Cmemb_pF, na.rm = TRUE), 2.5 * median(passive_parameters$Cmemb_pF, na.rm = TRUE))
 
 # Evaluate records against QC boundary criteria
 passive_parameters <- passive_parameters |>
@@ -257,26 +246,25 @@ plot_filtering <- ggplot(
     theme_minimal() +
     labs(title = "Quality Control Filtering Diagnostics", x = "Parameter", y = "Normalized Value (% of Median)")
 
-print(ggplotly(plot_filtering))
+print(plot_filtering)
 
 # Filter raw sweep dataset to retain exclusively QC-verified recordings
 keep <- passive_parameters |> filter(QC) |> select(file, sweep)
 sweeps_keep <- All_sweeps |>
     inner_join(keep, by = c("file", "sweep"))
+
 ```
 
 ---
 
 ### Synaptic Responses Analysis and Condition Comparison
 
-```{r synaptic_analysis}
-# Isolate synaptic records within the target time window and filter strictly for AC fiber stimulation
-# synaptic_responses <- sweeps_keep |>
-#     filter(between(time_s, 0.28, 0.40)) |>
-#     filter(stim == "AC")
+```{r synaptic_analysis, fig.width=9, fig.height=6}
+# Isolate synaptic records within the target time window and filter strictly for C fiber stimulation
 synaptic_responses <- sweeps_keep |>
     filter(between(time_s, 0.28, 0.40)) |>
     filter(stim == "C")
+
 # Define optimized time windows for baseline stability and response integration
 bl_start <- 0.290
 bl_end   <- 0.295
@@ -288,7 +276,7 @@ bl_m_en  <- 0.3148
 m_st     <- 0.3150
 m_en     <- 0.3300
 
-# Visualize individual AC synaptic traces overlaid with analysis boundaries
+# Visualize individual synaptic traces overlaid with analysis boundaries
 synaptic_traces_plot <- ggplot(synaptic_responses, aes(x = time_s, y = current_pA, group = interaction(file, sweep), color = file)) +
     geom_line(alpha = 0.5, show.legend = FALSE) +
     geom_vline(xintercept = bl_start, color = "lightblue", linetype = "dashed") +
@@ -298,9 +286,9 @@ synaptic_traces_plot <- ggplot(synaptic_responses, aes(x = time_s, y = current_p
     theme_minimal() +
     labs(title = "C Synaptic Responses Overview", x = "Time (s)", y = "Current (pA)")
 
-print(ggplotly(synaptic_traces_plot))
+print(synaptic_traces_plot)
 
-# Normalize AC responses and calculate condition-specific averages for comparative visualization
+# Normalize responses and calculate condition-specific averages for comparative visualization
 synaptic_area_plot <- synaptic_responses |>
     group_by(file, sweep) |>
     mutate(current_pA = current_pA - mean(current_pA[between(time_s, bl_start, bl_end)], na.rm = TRUE)) |>
@@ -322,7 +310,8 @@ condition_comparison_plot <- ggplot(synaptic_area_plot, aes(x = time_s, y = curr
     theme_minimal() +
     labs(title = "C Synaptic Responses Comparison by Condition", x = "Time (s)", y = "Current (pA)", color = "Condition")
 
-print(ggplotly(condition_comparison_plot))
+print(condition_comparison_plot)
+
 ```
 
 ---
@@ -365,8 +354,8 @@ write_tsv(final_dataset, file = "../Cell_2025_03_24_all_params.tsv")
 
 ### Correlation Analysis and Statistical Trends
 
-```{r correlation_matrix, warning=FALSE, message=FALSE}
-# Generate pairwise correlation matrix plot using ggpairs
+```{r correlation_matrix, warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+# Generate pairwise correlation matrix plot using ggpairs with expanded dimensions to ensure visibility
 final_dataset |>
     select(file, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF, total_area, mono_amplitude) |>
     na.omit() |>
@@ -379,7 +368,7 @@ final_dataset |>
 
 ```
 
-```{r scatter_trend}
+```{r scatter_trend, fig.width=9, fig.height=6}
 # Scatter plot with linear regression trendline evaluating amplitude vs. total area relationship
 plot_correlation <- ggplot(final_dataset, aes(x = mono_amplitude, y = total_area, color = file)) +
     geom_point(size = 3, alpha = 0.7) +
@@ -391,7 +380,7 @@ plot_correlation <- ggplot(final_dataset, aes(x = mono_amplitude, y = total_area
         y = "Total Area (pA*s)"
     )
 
-print(ggplotly(plot_correlation))
+print(plot_correlation)
 
 ```
 
@@ -409,4 +398,3 @@ numeric_correlation_matrix |>
     DT::datatable(options = list(pageLength = 10))
 
 ```
-
