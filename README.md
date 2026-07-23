@@ -68,6 +68,38 @@ git push
 Ask an instructor if you're unsure how to resolve a conflict — don't force-push
 over it.
 
+## Sharing your rendered notebook
+
+Every push of rendered HTML to your branch automatically
+publishes your notebook to the course website via GitHub Actions.
+
+**Render and publish:**
+
+1. Open `notebooks/Merging_annotate_all_cells.qmd` in RStudio and click **Render**.
+   This creates `notebooks/Merging_annotate_all_cells.html` (and possibly a
+   `notebooks/Merging_annotate_all_cells_files/` folder) next to the source file.
+2. Commit and push the rendered output:
+
+```bash
+git add notebooks/
+git commit -m "Render: update published notebook"
+git push
+```
+
+Your notebook will be live at:
+
+```
+https://UBDS-3.github.io/noradrenaline-lamina-x-2026-students/students/<your-name>/notebooks/Merging_annotate_all_cells.html
+```
+
+Replace `<your-name>` with the part after `student/` in your branch name.
+The course landing page links to all students once an instructor adds your entry
+to `index.qmd` on `main`.
+
+> **One-time repo setup (instructors only):** go to repo **Settings → Pages**,
+> set the source to the `gh-pages` branch, root folder. After the first student
+> push the branch is created automatically.
+
 ## Ground rules
 
 - **Never commit** raw sensitive data, credentials, API keys, or `.env` files.

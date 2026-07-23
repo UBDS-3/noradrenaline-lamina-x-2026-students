@@ -1,0 +1,620 @@
+---
+title: "Lamin X project"
+author: "Maryna D."
+date: "20-23, July 2026"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: false
+execute:
+  warning: false
+  message: false
+---
+
+## Patch clamp data import
+
+Cell: `2023_03_22_2`
+
+This Quarto (.qmd) document outlines the workflow for importing, tidying, and analyzing raw electrophysiological patch-clamp recordings from cell 2023_03_22_2.
+
+```{r setup}
+library(readABF)
+library(conflicted)
+library(dplyr)
+library(DT)
+library(tidyverse)
+library(plotly)
+
+# Set conflict resolutions to prefer dplyr methods over base/stats
+conflict_prefer("rename", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicts_prefer(base::as.factor)
+
+```
+
+```{r import_file}
+
+# Import one example file
+example_file <- readABF("../data/2023-03-22_2/2023_03_22_0032.abf")
+
+# make data tidy
+# as.data.frame(example_file, sweep = 1)
+
+extract_sweep <- function(sweep_n, abf){
+    abf |>
+        as.data.frame(sweep = sweep_n) |>
+        mutate(sweep = sweep_n)
+}
+
+# extract_sweep(sweep_n = 1, abf = example_file)
+
+sweep_dfs <- map(1:length(example_file$data), extract_sweep, abf = example_file)
+
+example_df <- bind_rows(sweep_dfs)
+
+abf_to_df <- function(abf){
+    map(1:length(abf$data), extract_sweep, abf = abf) |>
+        bind_rows()
+}
+
+example_df <- abf_to_df(example_file)
+
+datatable(head(example_df, 1000))
+
+knitr::kable(head(example_df))
+```
+
+## Now import all data for the cell
+
+```{r real_import}
+
+files <- list.files(
+    "../data/2023-03-22_2/", 
+    pattern = ".abf", 
+    full.names = TRUE
+    )
+
+# extract the 4-digit file id, e.g. ".../2023_03_22_0032.abf" -> "0032"
+# (regex is more robust than str_sub here since we don't know if the
+# filenames end in "_0032.abf" or "0032_.abf" etc.)
+file_ids <- str_extract(basename(files), "\\d{4}(?=_?\\.abf$)")
+
+abfs <- map(files, readABF)
+
+dfs <- map(abfs, abf_to_df)
+
+names(dfs) <- file_ids
+
+# the exact channel names readABF produces depend on the signals recorded
+# for this cell (Currnt0Pr, Volt2Pr per the ATF header) -- any_of() means
+# this still works if the naming differs slightly between files
+dfs <- map(
+    dfs, 
+    rename, time_s = `Time [s]`, 
+    current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]", "Volt2Pr [pA]"))
+    )
+
+dfs <- map(dfs, select, time_s, current_pA, sweep)
+
+all_sweeps <- bind_rows(dfs, .id = "file")
+
+datatable(head(all_sweeps, 10000))
+
+```
+
+## Annotate
+
+Here we add the variables for stimulation type and condition (control, noradrenaline, washout), per the notebook entry above.
+
+```{r annotate}
+
+all_sweeps <- all_sweeps %>%
+    filter(file %in% c("0032", "0036", "0037")) %>%
+    mutate(
+        # type of fibers stimulated in this file / sweep (C or both)
+        stim = if_else(sweep <= 10, "AC", "C"),
+        # condition of recording (control, noradrenaline, washout)
+        cond = case_when(
+            file == "0032" ~ "control",
+            file == "0036" ~ "noradrenalin",
+            file == "0037" ~ "washout"
+        )
+    ) %>%
+    mutate(
+        stim = as.factor(stim),
+        cond = as.factor(cond),
+    )
+
+datatable(head(all_sweeps, 100))
+
+```
+
+```{r saving data}
+
+write_tsv(all_sweeps, file = "../all_sweeps.tsv")
+
+# saving only part of the data for shiny app to make it faster
+write_tsv(all_sweeps |> filter(between(time_s, 0.1, 0.7)), 
+file = "../all_sweeps_part.tsv")
+
+```
+## Calculate passive parameters
+
+We calculated the next passive parameters :
+
+baseline (pA), serial resistance
+
+```{r passive}
+
+# saving only part of data with voltage step to work with
+voltage_step_data <- all_sweeps |>
+    filter(between(time_s, 0.12, 0.22))
+
+#setting time windows
+baseline_tw <- c(0.14, 0.16)
+peak_tw <- c(0.159, 0.165)
+plateau_tw <- c(0.180, 0.198)
+decay_tw <- c(0.1605, 0.175)
+
+# checking time windows
+plot_voltage_step <- ggplot(voltage_step_data, 
+       aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
+       )+
+    geom_line(alpha = 0.6) +
+    geom_vline(xintercept = baseline_tw, color = "lightblue") +
+    geom_vline(xintercept = peak_tw, color = "pink") +
+    geom_vline(xintercept = plateau_tw, color = "lightgreen")+
+    geom_vline(xintercept = decay_tw, color = "gold")
+
+ggplotly(plot_voltage_step)
+
+# calculating resistances
+passive_parameters <- voltage_step_data |>
+    group_by(file,sweep) |>
+    summarise(
+        baseline_pA = mean(
+            current_pA[between(time_s, baseline_tw[1], baseline_tw[2])]
+            ),
+        peak_pA = min(
+            current_pA[between(time_s, peak_tw[1], peak_tw[2])]
+            ) - baseline_pA,
+        plateau_pA = mean(
+            current_pA[between(time_s, plateau_tw[1], plateau_tw[2])]
+            ) - baseline_pA,
+        Rs_MOhm = -10000 / peak_pA,
+        Rtotal_MOhm = -10000 / plateau_pA,
+        Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
+        )
+
+
+decay_tw <- c(0.1605, 0.175)
+
+#### This Part of code will be VERY hard to explain ####
+# so we will just copypaste it (it must be robust to errors)
+# and i will give a general overview what it is doing:
+
+decay_fits <- voltage_step_data |> 
+    filter(time_s >= decay_tw[1], time_s <= decay_tw[2]) |> 
+    nest(.by = c(file, sweep)) |>
+    # now we have list-column "data" which will be used for modelling
+    mutate(
+        models = map(
+            data, 
+            possibly(\(x) nls(x, 
+                              formula = current_pA ~ SSasymp(time_s, Asym, R0, lrc))
+                     )
+            ),
+        # using SSasymp() as in this tutorial:
+        # https://douglas-watson.github.io/post/2018-09_exponential_curve_fitting/
+        # but wrapping with possible() to still run if exponent does not fit
+        coefs = map(models, coef), #extracting coeficients from model
+        lrc = map_dbl(coefs, \(x) pluck(x, "lrc", .default = NA)), 
+        # pluck() extract value of the lrc from all coefs lists.
+        tau = 1/exp(lrc) 
+        # SSasymp calculate natural Logarithm of Rate Constant (lrc),
+        # but we need tau which is 1 / rate constant
+        ) |>
+    select(file, sweep, tau) # only the variable we needed
+
+#### END OF HARD PART ####
+
+passive_parameters <- passive_parameters |>
+    left_join(decay_fits) |>
+    mutate(
+        Cmemb_approx_pF = tau / Rs_MOhm * 10^6,
+        # tau (s) / R (MOhms) = C (uF), *10^6 to convert to pF
+        
+        Cmemb_pF = tau / (1/(1/Rs_MOhm + 1/Rmemb_MOhm)) * 10^6
+        # actually tau depends on both Rseries and Rmemb, 
+        # and from Capacitor point of view they are in parallel 
+        )
+
+
+datatable(passive_parameters)
+
+
+# show calculated passive parameters
+passive_parameters |>
+    select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    datatable(rownames = FALSE)
+
+# and nice plot to see them
+passive_parameters |>
+      select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
+    na.omit() |>
+    GGally::ggpairs(
+          aes(color = file), 
+          columns = 3:6
+          )
+```
+
+## Calculating the postsynaptic responces
+
+### postsynaptic responces to AC stimulation
+
+```{r ACpostsynaptic}
+
+# saving only part of data with voltage step to work with
+AC_responses <- all_sweeps |>
+    filter(between(time_s, 0.28, 0.4)) |>
+    filter(stim == "AC")
+
+# setting time windows for total area of response
+bl_area_tw <- c(0.285, 0.2935)
+area_tw <- c(0.3045, 0.384)
+
+# quick plotly to check time windows
+ACtraces_plot <- ggplot(AC_responses, aes(
+    x = time_s, 
+    y = current_pA,
+    group = interaction(file, sweep),
+    color = file
+    ))+
+    geom_line(
+        alpha = 0.5,
+        show.legend = FALSE
+        ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "gold")
+
+ggplotly(ACtraces_plot)
+
+
+calculate_response <- function(data, bl_tw, resp_tw, param) {
+    data |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA -
+            mean(current_pA[between(time_s, bl_tw[1], bl_tw[2])])
+    ) |>
+    filter(between(time_s, resp_tw[1], resp_tw[2])) |>
+    summarise(
+        parameter = case_when(
+            param == "amplitude" ~ min(current_pA),
+            param == "area" ~ sum(current_pA) * 0.00005,
+            .default = NA_real_
+            )
+    )
+}
+
+bl_mono1_tw <- c(0.3035, 0.3045)
+mono1_tw <- c(0.3075, 0.3085)
+
+AC_mono1_aplitudes <- calculate_response(
+    AC_responses,
+    bl_tw = bl_mono1_tw,
+    resp_tw = mono1_tw,
+    param = "amplitude"
+    )
+
+AC_areas <- calculate_response(
+    AC_responses,
+    bl_tw = bl_area_tw,
+    resp_tw = area_tw,
+    param = "area"
+    )
+
+AC_areas <- AC_areas |>
+    rename(area_pAs = parameter)
+
+AC_mono1_aplitudes <- AC_mono1_aplitudes |>
+    rename(mono1_amp_pA = parameter)
+
+AC_all_params <- AC_areas |> 
+    left_join(AC_mono1_aplitudes) |>
+    left_join(passive_parameters)
+
+write_tsv(AC_all_params, file = "../AC_all_params.tsv")
+
+```
+
+### postsynaptic responces to C stimulation
+
+Sweeps 11+ in every file are C-fiber-only stimulation.
+
+The AC-derived placeholder windows (0.314-0.318 s) do NOT work for the C-fiber
+data -- checking the raw traces shows that window only captures the tail of the
+stimulus artifact (a fast, essentially jitter-free deflection that peaks at
+exactly 0.3111 s in *every single sweep*, which is the signature of an
+electrical artifact rather than a synaptic event). The genuine C-fiber
+response is slower and, consistent with the slower and more variable
+conduction of unmyelinated C-fibers, its peak latency jitters sweep-to-sweep
+(peak times ranging roughly 0.32-0.365 s across sweeps/files, vs. the
+artifact's fixed 0.3111 s). The windows below are based on inspecting the raw
+sweeps directly:
+
+- baseline: `c(0.295, 0.308)` -- flat period just before the stimulus artifact
+- response window: `c(0.32, 0.5)` -- starts after the artifact has decayed and
+  covers the full rise/peak/decay of the C-fiber response (much longer-lasting
+  than the AC monosynaptic component, so the window is wider than the AC one)
+
+Because the peak latency jitters from sweep to sweep, we use one window (not a
+tight ~1 ms one like AC's `mono1_tw`) and take the minimum within it, the same
+way `calculate_response()` already works for `param = "amplitude"`. Check
+`Ctraces_plot` below against these vlines before trusting the numbers -- adjust
+if your data looks different.
+
+```{r Cpostsynaptic}
+
+# saving only part of data to work with -- wide enough to show baseline,
+# the stimulus artifact, and the full C-fiber response decay
+C_responses <- all_sweeps |>
+    filter(between(time_s, 0.29, 0.55)) |>
+    filter(stim == "C")
+
+# setting time windows (see note above for how these were chosen)
+C_bl_tw   <- c(0.295, 0.308)
+C_resp_tw <- c(0.32, 0.5)
+
+# quick plotly to check time windows
+Ctraces_plot <- ggplot(C_responses, aes(
+    x = time_s,
+    y = current_pA,
+    group = interaction(file, sweep),
+    color = file
+    ))+
+    geom_line(
+        alpha = 0.5,
+        show.legend = FALSE
+        ) +
+    geom_vline(xintercept = C_bl_tw, color = "lightblue") +
+    geom_vline(xintercept = C_resp_tw, color = "gold")
+
+ggplotly(Ctraces_plot)
+
+# total area of the C-fiber response
+C_areas <- calculate_response(
+    C_responses,
+    bl_tw = C_bl_tw,
+    resp_tw = C_resp_tw,
+    param = "area"
+    ) |>
+    rename(area_pAs = parameter)
+
+# peak amplitude of the C-fiber response -- a single wide window (not a tight
+# ~1 ms one like AC's mono1_tw), since the peak latency jitters sweep to sweep
+C_peak_amplitudes <- calculate_response(
+    C_responses,
+    bl_tw = C_bl_tw,
+    resp_tw = C_resp_tw,
+    param = "amplitude"
+    ) |>
+    rename(peak_amp_pA = parameter)
+
+C_all_params <- C_areas |>
+    left_join(C_peak_amplitudes, by = c("file", "sweep")) |>
+    left_join(passive_parameters, by = c("file", "sweep"))
+
+write_tsv(C_all_params, file = "../C_all_params.tsv")
+
+datatable(C_all_params)
+
+```
+
+## Filtering our data from parameters
+
+```{r filtering}
+# selecting only the most important variables
+passive_parameters <- passive_parameters |>
+      select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF)
+
+# setting limits
+baseline_lims <- c(-200,0)
+Rs_lims <- c(
+    0.9 * median(passive_parameters$Rs_MOhm, na.rm = TRUE),
+    1.1 * median(passive_parameters$Rs_MOhm, na.rm = TRUE)
+    )
+Rm_lims <- c(
+    0.5 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE),
+    2 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE)
+    )
+Cm_lims <- c(
+    0.5 * median(passive_parameters$Cmemb_pF, na.rm = TRUE),
+    2 * median(passive_parameters$Cmemb_pF, na.rm = TRUE)
+    )
+
+# do quality check -- both per-parameter flags (for plotting) and
+# the combined flag (for actually keeping/dropping sweeps)
+passive_parameters <- passive_parameters |>
+    ungroup() |>
+    mutate(
+        QC_baseline = between(baseline_pA, baseline_lims[1], baseline_lims[2]),
+        QC_Rs       = between(Rs_MOhm, Rs_lims[1], Rs_lims[2]),
+        QC_Rm       = between(Rmemb_MOhm, Rm_lims[1], Rm_lims[2]),
+        QC_Cm       = between(Cmemb_pF, Cm_lims[1], Cm_lims[2]),
+        QC = QC_baseline & QC_Rs & QC_Rm & QC_Cm
+    )
+
+# visualisation of quality check -- colored by the criterion specific
+# to each facet, so a point's color always matches its own threshold lines
+plot_filtering <- ggplot(
+    data = passive_parameters |>
+        mutate(
+            bl_pc = baseline_pA / median(baseline_pA, na.rm = TRUE),
+            rs_pc = Rs_MOhm / median(Rs_MOhm, na.rm = TRUE),
+            rm_pc = Rmemb_MOhm / median(Rmemb_MOhm, na.rm = TRUE),
+            cm_pc = Cmemb_pF / median(Cmemb_pF, na.rm = TRUE)
+        ) |>
+        select(file, sweep, bl_pc, rs_pc, rm_pc, cm_pc,
+               QC_baseline, QC_Rs, QC_Rm, QC_Cm) |>
+        pivot_longer(
+            cols = c(bl_pc, rs_pc, rm_pc, cm_pc),
+            names_to = "param",
+            values_to = "percentage"
+        ) |>
+        mutate(
+            QC_param = case_when(
+                param == "bl_pc" ~ QC_baseline,
+                param == "rs_pc" ~ QC_Rs,
+                param == "rm_pc" ~ QC_Rm,
+                param == "cm_pc" ~ QC_Cm
+            )
+        ),
+    aes(x = param, y = percentage)
+    ) +
+    geom_boxplot(outliers = FALSE) +
+    geom_point(
+        aes(group = interaction(file, sweep), color = QC_param),
+        position = position_dodge(0.2)
+        ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        position = position_dodge(0.2),
+        alpha = 0.2
+        ) +
+    annotate(
+        "segment",
+        x = c(0.6, 1.6, 1.6, 2.6, 2.6, 3.6, 3.6),
+        xend = c(1.4, 2.4, 2.4, 3.4, 3.4, 4.4, 4.4),
+        y = c(-200/median(passive_parameters$baseline_pA), 0.5, 2, 0.5, 2, 0.9, 1.1),
+        yend = c(-200/median(passive_parameters$baseline_pA), 0.5, 2, 0.5, 2, 0.9, 1.1),
+        color = "darkblue"
+        ) +
+    ylim(0, 4) +
+    labs(color = "QC")
+
+ggplotly(plot_filtering)
+
+# filtering raw sweeps data -- uses the COMBINED QC (all 4 criteria),
+# not the per-parameter one used just for the plot's coloring
+keep <- passive_parameters %>% filter(QC) %>% select(file, sweep)
+sweeps_keep <- all_sweeps |>
+    inner_join(keep, by = c("file", "sweep"))
+
+```
+
+## Total area of response by condition
+
+```{r AC_condition_avg_plot}
+
+# baseline-subtracted traces for every sweep, for plotting
+AC_area_plot <- AC_responses |>
+    filter(between(time_s, 0.28, 0.4)) |>
+    group_by(file, sweep) |>
+    mutate(
+        current_pA = current_pA -
+            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+    ) |>
+    ungroup()
+
+# condition-level average trace (mean across sweeps at each timepoint)
+AC_average_plot <- AC_area_plot |>
+    group_by(cond, time_s) |>
+    summarise(current_pA = mean(current_pA), .groups = "drop")
+
+ACtraces_plot <- ggplot(
+    AC_area_plot,
+    aes(
+        x = time_s,
+        y = current_pA,
+        color = cond
+        )
+    ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        alpha = 0.1,
+        show.legend = FALSE
+        ) +
+    geom_line(
+        data = AC_average_plot,
+        aes(group = cond)
+        ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "gold") +
+    ylim (-300, 20) +
+    labs(x = "Time (s)", y = "Current (pA)",
+         color = "Condition")
+
+ggplotly(ACtraces_plot)
+
+```
+
+### One-Way ANOVA for Area and Amplitude
+
+```{r statistical_analysis}
+library(stats)
+# Fit ANOVA models for response area and first monosynaptic peak amplitude
+# Re-create AC_all_params with the 'cond' variable restored
+AC_all_params <- AC_areas |> 
+    left_join(AC_mono1_aplitudes, by = c("file", "sweep")) |>
+    left_join(passive_parameters, by = c("file", "sweep")) |>
+    mutate(
+        cond = case_when(
+            file == "0032" ~ "control",
+            file == "0036" ~ "noradrenalin",
+            file == "0037" ~ "washout"
+        ),
+        cond = as.factor(cond)
+    )
+
+# Fit ANOVA models for response area and first monosynaptic peak amplitude
+anova_area <- aov(area_pAs ~ cond, data = AC_all_params)
+anova_amp  <- aov(mono1_amp_pA ~ cond, data = AC_all_params)
+
+# Display ANOVA summary tables
+summary(anova_area)
+summary(anova_amp)
+
+# Post-hoc analysis (Tukey's Honest Significant Difference)
+tukey_area <- TukeyHSD(anova_area)
+tukey_amp  <- TukeyHSD(anova_amp)
+
+tukey_area
+tukey_amp
+# Plot area and monosynaptic amplitude differences across conditions
+p_area <- ggplot(AC_all_params, aes(x = cond, y = area_pAs, fill = cond)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+    geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+    theme_minimal() +
+    labs(
+        title = "AC Response Area by Condition",
+        x = "Condition",
+        y = "Area (pA·s)"
+    ) +
+    theme(legend.position = "none")
+
+p_amp <- ggplot(AC_all_params, aes(x = cond, y = mono1_amp_pA, fill = cond)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+    geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+    theme_minimal() +
+    labs(
+        title = "AC Monosynaptic Amplitude by Condition",
+        x = "Condition",
+        y = "Amplitude (pA)"
+    ) +
+    theme(legend.position = "none")
+
+plotly::subplot(ggplotly(p_area), ggplotly(p_amp), titleY = TRUE, margin = 0.05)
+```
+
+## Session info
+
+```{r info}
+
+sessionInfo()
+
+```
