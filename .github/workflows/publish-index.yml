@@ -1,0 +1,37 @@
+name: Publish Landing Page
+
+# Runs whenever the instructor updates index.qmd on main.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'index.qmd'
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+
+      - name: Render landing page
+        run: |
+          quarto render index.qmd
+          mkdir -p _deploy_index
+          cp index.html _deploy_index/
+
+      # Deploy only index.html to the root of gh-pages.
+      # keep_files: true preserves the students/ subdirectories already there.
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _deploy_index
+          keep_files: true
