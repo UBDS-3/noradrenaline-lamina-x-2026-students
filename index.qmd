@@ -1,0 +1,14 @@
+---
+title: "UBDS³ Lamina X 2026 — Student Notebooks"
+format:
+  html:
+    theme: cosmo
+    toc: false
+---
+
+Rendered notebooks from each student. Click a name to view their work.
+
+| Student | Notebook |
+|---------|----------|
+| Name | (students/notebooks/name_notebook.html) |
+

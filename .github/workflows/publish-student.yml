@@ -1,0 +1,45 @@
+name: Publish Student Notebook
+
+# Runs whenever a student pushes rendered HTML on their branch.
+on:
+  push:
+    branches:
+      - 'student/**'
+    paths:
+      - 'notebooks/**'
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out student branch
+        uses: actions/checkout@v4
+
+      # Extract "firstname" from refs/heads/student/firstname
+      - name: Get student name from branch
+        id: info
+        run: |
+          STUDENT="${GITHUB_REF#refs/heads/student/}"
+          echo "student=$STUDENT" >> "$GITHUB_OUTPUT"
+
+      # Stage only the rendered HTML (and any _files/ dirs) — excludes .qmd source.
+      - name: Stage rendered output
+        run: |
+          mkdir -p _deploy/notebooks
+          find notebooks -maxdepth 1 -name "*.html" -exec cp {} _deploy/notebooks/ \;
+          for d in notebooks/*_files; do
+            [ -d "$d" ] && cp -r "$d" _deploy/notebooks/
+          done
+
+      # Deploy to gh-pages under students/<name>/.
+      # keep_files: true preserves every other student's directory.
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _deploy
+          destination_dir: students/${{ steps.info.outputs.student }}
+          keep_files: true
