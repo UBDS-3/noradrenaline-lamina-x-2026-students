@@ -29,7 +29,7 @@ library(GGally)
 library(plotly)
 ```
 
-# Cell
+# Import data
 
 Lets import our file
 ```{r import_file}
@@ -63,7 +63,7 @@ head(abf_to_df(example_file))
 
 
 ```
-# Import all data for the cell
+
 
 ```{r real_import}
 
@@ -95,7 +95,7 @@ all_sweeps <- bind_rows(dfs, .id = "file")
 ```
 # Annotate
 
-```{r}
+```{r annotate}
 
 # 2025-03-12
 All_sweeps <- bind_rows(dfs, .id = "file")
@@ -123,44 +123,36 @@ All_sweeps <- All_sweeps |>
 
 ## Example data table 
 
-```{r}
+```{r knitr}
 datatable(head(example_df))
 
 knitr::kable(head(example_df))
 
 ```
-# Session info
 
-```{r}
+```{r tsv}
 
-sessionInfo()
-
-```
-
-
-```{r}
-library(tidyverse)
 write_tsv(All_sweeps, file = "all_sweeps.tsv")
 all_sweeps <- read_tsv("all_sweeps.tsv")
 
 ```
 
-# Calculate passive parametrs
+# Calculating of the postsynaptic responses
 
 We calculated this passive parameters:
 baseline (pA), serial resistance
 
 ## Voltage step plot
 
-```{r}
+```{r voltage_step_data}
 
 voltage_step_data <- all_sweeps |>
-  filter(between(time_s, 0.12, 0.22))
-
-baseline_tw <- c(0.14, 0.16)
-peak_tw <- c(0.159, 0.165)
-plateau_tw <- c(0.180, 0.198)
-decay_tw <- c(0.1605, 0.175)
+   filter(between(time_s, 0.12, 0.22))
+ 
+ baseline_tw <- c(0.14, 0.16)
+ peak_tw <- c(0.159, 0.165)
+ plateau_tw <- c(0.180, 0.198)
+ decay_tw <- c(0.1605, 0.175)
 
 plot_voltage_step <- ggplot(voltage_step_data,
     aes(x = time_s, y = current_pA, group = interaction(file,sweep), color = file)
@@ -177,7 +169,7 @@ ggplotly(plot_voltage_step)
 
 ## Passive parameters data table
 
-```{r}
+```{r passive_parameters}
 
 passive_parameters <- voltage_step_data |>
   group_by(file,sweep) |>
@@ -195,6 +187,9 @@ passive_parameters <- voltage_step_data |>
     Rtotal_MOhm = -10000 / plateau_pA,
     Rmemb_MOhm = Rtotal_MOhm - Rs_MOhm
     )
+
+
+
 
 #### This Part of code will be VERY hard to explain ####
 # so we will just copypaste it (it must be robust to errors)
@@ -244,14 +239,94 @@ passive_parameters |>
     columns = 3:6
     )
 
-datatable(passive_parameters)
 
 ```
-## AC traces plot:
 
-```{r}
+# Quality filtering
 
-AC_responses <- all_sweeps|>
+```{r quality_filtering}
+# setting limits
+baseline_lims <- c(-200,0)
+Rs_lims <- c(
+  0.9 * median(passive_parameters$Rs_MOhm, na.rm = TRUE),
+  1.1 * median(passive_parameters$Rs_MOhm, na.rm = TRUE)
+  )
+Rm_lims <- c(
+  0.5 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE),
+  2 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE)
+  )
+Cm_lims <- c(
+  0.5 * median(passive_parameters$Cmemb_pF, na.rm = TRUE),
+  2 * median(passive_parameters$Cmemb_pF, na.rm = TRUE)
+  )
+
+# selecting only the most important variables
+# then do quality check
+passive_parameters <- passive_parameters |>
+  ungroup() |>
+  select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF)|>
+  mutate(
+    QC = between(baseline_pA, baseline_lims[1], baseline_lims[2]) &
+    between(Rs_MOhm, Rs_lims[1], Rs_lims[2]) &
+    between(Rmemb_MOhm, Rm_lims[1], Rm_lims[2]) &
+    between(Cmemb_pF, Cm_lims[1], Cm_lims[2])
+    )
+
+# visualisation of quality check
+plot_filtering <- ggplot(
+  ## first transform dataframe to corrrect format
+  data = passive_parameters |>
+  mutate(
+    bl_pc = baseline_pA / median(baseline_pA, na.rm = TRUE),
+    rs_pc = Rs_MOhm / median(Rs_MOhm, na.rm = TRUE),
+    rm_pc = Rmemb_MOhm / median(Rmemb_MOhm, na.rm = TRUE),
+    cm_pc = Cmemb_pF / median(Cmemb_pF, na.rm = TRUE)
+    ) |>
+    select(file, sweep, bl_pc, rs_pc, rm_pc, cm_pc, QC) |>
+    pivot_longer(
+      cols = c(bl_pc, rs_pc, rm_pc, cm_pc),
+      names_to = "param",
+      values_to = "percentage"
+      ),
+  aes(x = param, y = percentage)
+  ) +
+  geom_boxplot(outliers = FALSE) +
+  geom_point(
+    aes(group = interaction(file, sweep), color = QC),
+    position = position_dodge(0.2)
+    ) +
+  geom_line(
+    aes(group = interaction(file, sweep)),
+    position = position_dodge(0.2),
+    alpha = 0.2
+    ) +
+  # show our filtering thresholds for each column
+  annotate(
+    "segment",
+    x = c(0.6, 1.6, 1.6, 2.6, 2.6, 3.6, 3.6),
+    xend = c(1.4, 2.4, 2.4, 3.4, 3.4, 4.4, 4.4),
+    y = c(-200/median(passive_parameters$baseline_pA), 0.5, 2, 0.5, 2, 0.9, 1.1),
+    yend = c(-200/median(passive_parameters$baseline_pA), 0.5, 2, 0.5, 2, 0.9, 1.1),
+    color = "darkblue"
+    ) +
+  ylim(0, 4)
+
+ggplotly(plot_filtering)
+
+# filtering raw sweeps data
+keep <- passive_parameters %>% filter(QC) %>% select(file, sweep)
+sweeps_keep <- all_sweeps |>
+  inner_join(keep, by = c("file", "sweep"))
+
+
+```
+# Postsynaptic responses analysis
+
+## Postsynaptic responses to AC stimulation
+
+```{r AC_responses}
+
+AC_responses <- sweeps_keep|>
   filter(between(time_s, 0.28, 0.4)) |>
   filter(stim == "AC")
 bl_area_tw <- c(0.3062, 0.30985)
@@ -261,7 +336,7 @@ ACtraces_plot <- ggplot(AC_responses, aes(
   x = time_s,
   y = current_pA,
   group = interaction(file, sweep),
-  color = file
+  color = cond
   ))+
   geom_line(
     alpha = 0.5,
@@ -276,7 +351,7 @@ ggplotly(ACtraces_plot)
 
 ## AC area data table:
 
-```{r}
+```{r AC_area}
 # 
 # AC_area <- AC_responses |>
 #   group_by(file, sweep) |>
@@ -339,9 +414,9 @@ datatable(AC_area)
 
 ```
 
-## AC mono 1 amplitudes data table:
+## AC monosynaptic response 1 amplitudes data table:
 
-```{r}
+```{r AC_mono1}
 
 # calculate_response <- function(data, bl_tw, resp_tw, param) {
 #   data |>
@@ -377,9 +452,9 @@ datatable(AC_mono1_amplitudes)
 
 ```
 
-## AC mono 2 amplitudes data table:
+## AC monosynaptic response 2 amplitudes data table:
 
-```{r}
+```{r AC_mono2}
 
 bl_mono2_tw <- c(0.31985, 0.32020)
 mono2_tw <- c(0.32095, 0.3218)
@@ -398,9 +473,9 @@ datatable(AC_mono2_amplitudes)
 
 ```
 
-## AC mono 3 amplitudes data table:
+## AC monosynaptic response 3 amplitudes data table:
 
-```{r}
+```{r AC_mono3}
 
 bl_mono3_tw <- c(0.32305, 0.3238)
 mono3_tw <- c(0.32485, 0.32585)
@@ -419,9 +494,9 @@ datatable(AC_mono3_amplitudes)
 
 ```
 
-## All
+## All responses to AC stimulation: 
 
-```{r}
+```{r AC_all}
 
 # AC_area <- AC_area |>
 #   rename(area_pAs = parametr)
@@ -447,8 +522,40 @@ write_tsv(AC_all_params, file = "../AC_all_params.tsv")
 
 ```
 
-```{r}
+## Postsynaptic responses of C stimulation
+
+```{r C_responses}
+
+C_responses <- sweeps_keep|>
+  filter(between(time_s, 0.28, 0.4)) |>
+  filter(stim == "C")
+bl_area_tw <- c(0.3062, 0.30985)
+area_tw <- c(0.316, 0.382)
+
+Ctraces_plot <- ggplot(C_responses, aes(
+  x = time_s,
+  y = current_pA,
+  group = interaction(file, sweep),
+  color = file
+  ))+
+  geom_line(
+    alpha = 0.5,
+    show.legend = FALSE) +
+  geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+  geom_vline(xintercept = area_tw, color = "gold")
 
 
+ggplotly(Ctraces_plot)
+
+
+```
+
+There is no C monosynaptic response
+
+# Session info
+
+```{r session_info}
+
+sessionInfo()
 
 ```
