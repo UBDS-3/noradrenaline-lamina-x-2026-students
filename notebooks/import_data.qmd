@@ -509,6 +509,7 @@ Write data into separate file
 
 ```{r}
 write_tsv(AC_all_params, file = "../AC_all_params.tsv")
+write_tsv(passive_parameters, file = "../passive_parameters.tsv")
 ```
 
 ### Postsynaptic responces to C stimulation
@@ -581,9 +582,14 @@ calculate_response(
 
 
 C_all_params <- C_area |>
-    left_join(AC_mono1_amplts) |>
+    left_join(C_mono1_amplts) |>
     left_join(passive_parameters)
     
+```
+```{r}
+
+write_tsv(C_all_params, file = "../C_all_params.tsv")
+
 ```
 
 ## Session info
