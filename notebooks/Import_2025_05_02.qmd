@@ -1,5 +1,5 @@
 ---
-title: "Import_2025_05_02"
+title: "Cell ID: 2025_05_02 Report"
 author: "Ivan Blashchak"
 date: today
 format:
@@ -18,7 +18,11 @@ execute:
 
 ## About
 
-This is .Qmd document for importing patch clamp data for cell 2025_05_02
+This is .Qmd report for patch clamp data analysis
+for Lamina X cell (cell ID: 2025_05_02).
+Recordings of excitatory postsynaptic currents (EPSCs) 
+evoked by primary afferents stimulation were made in control conditions 
+and after the addition of Noradrenaline
 
 
 ```{r setup}
@@ -29,47 +33,24 @@ library(tidyverse)
 library(plotly)
 library(DT)
 
-```
-
-## Cell: 2025_05_02
-
-First lets just import one file
-
-```{r import_file}
-
-#import one example file
-example_file <- readABF("../data/2025_05_02/2025_05_02_0005.abf")
-
-# make data tidy
-# as.data.frame(example_file, sweep = 1)
-
 extract_sweep <- function(sweep_n, abf){
     abf |>
         as.data.frame(sweep = sweep_n) |>
         mutate(sweep = sweep_n)
 }
 
-# extract_sweep(sweep_n = 1, abf = example_file)
-
-sweep_dfs <- map(1:length(example_file$data), extract_sweep, abf = example_file)
-
-example_df <- bind_rows(sweep_dfs)
-
 abf_to_df <- function(abf){
     map(1:length(abf$data), extract_sweep, abf = abf) |>
         bind_rows()
 }
 
-example_df <- abf_to_df(example_file)
-
-datatable(head(example_df, 10000))
-
-knitr::kable(head(example_df))
 ```
 
-## Now import all data for the cell
+## Data import
 
-``` {r real_import}
+Files read:
+
+``` {r import}
 
 files <- list.files(
     "../data/2025_05_02/", 
@@ -81,14 +62,9 @@ abfs <- map(files, readABF)
 
 dfs <- map(abfs, abf_to_df)
 
-files |> str_sub(-9,-5)
+files |> str_sub(-19,-5)
 
 names(dfs) <- str_sub(files, -9,-5)
-
-# example_df |> rename(
-#     time_s = `Time [s]`,
-#     current_pA = any_of(c("Currnt0Pr [pA]", "Volt0Pr [pA]"))
-# )
 
 dfs <- map(
     dfs, 
@@ -100,14 +76,15 @@ dfs <- map(dfs, select, time_s, current_pA, sweep)
 
 all_sweeps <- bind_rows(dfs, .id = "file")
 
-datatable(head(all_sweeps, 10000))
-
 ```
 
-## Annotate
+**Part of the imported data.**
 
-Here we add the variables for stimulation type and 
-condition (control, noradrenaline, washout)
+After import each file|sweep combination was annotated: 
+stimulation type (A, C or both A and C fiber stimulation) and 
+condition (control, noradrenaline or washout)
+
+Here is just first 100 datapoints to check:
 
 ```{r annotate}
 
@@ -136,31 +113,34 @@ all_sweeps <- all_sweeps %>%
         cond = as.factor(cond),
     )
 
-
-datatable(head(all_sweeps, 10000))
-
+datatable(head(all_sweeps, 100))
 
 ```
 
+Raw data was saved in `2025_05_02_all_sweeps.tsv`
 
 ```{r saving data}
 
-write_tsv(all_sweeps, file = "../all_sweeps.tsv")
-
-
-# saving only part of the data for shiny app to make it faster
-write_tsv(all_sweeps |> filter(between(time_s, 0.1, 0.7)), 
-file = "../all_sweeps_part.tsv")
-
+write_tsv(all_sweeps, file = "../2025_05_02_all_sweeps.tsv")
+# 
+# # saving only part of the data for shiny app to make it faster
+# write_tsv(all_sweeps |> filter(between(time_s, 0.1, 0.7)), 
+# file = "../all_sweeps_part.tsv")
 ```
 
 
-## Calculate passive parameters
+## Passive parameters
 
-We calculated the next passive parameters :
+From the voltage step (*-10 mV*) at the beginning of each sweep 
+we calculated the next parameters of the recording:
 
-baseline (pA), serial resistance
+- baseline (*pA*)
+- serial resistance (*MOhm*)
+- membrane resistance (*MOhm*) 
+- membrane capacitance (*pF*)
 
+Here are selected time frames to find the baseline (*blue*), peak current (*red*),
+plateau current (*green*) and rate constant of the exponential decay (*yellow*)
 
 ```{r passive}
 
@@ -183,6 +163,7 @@ plot_voltage_step <- ggplot(voltage_step_data,
     geom_vline(xintercept = peak_tw, color = "pink") +
     geom_vline(xintercept = plateau_tw, color = "lightgreen")+
     geom_vline(xintercept = decay_tw, color = "gold")
+    
 
 ggplotly(plot_voltage_step)
 
@@ -248,9 +229,13 @@ passive_parameters <- passive_parameters |>
         # and from Capacitor point of view they are in parallel 
         )
 
+```
 
-datatable(passive_parameters)
+Here are the calculated parameters, and 
+their pairs plot to make quick visual check
+*NA and outliers are removed from pairs plot*
 
+```{r show_parameters}
 
 # show calculated passive parameters
 passive_parameters |>
@@ -261,45 +246,117 @@ passive_parameters |>
 passive_parameters |>
       select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF) |>
     na.omit() |>
-    filter(file != "_0008") |>
+    filter(baseline_pA >= -500) |>
     GGally::ggpairs(
           aes(color = file), 
           columns = 3:6
           )
 ```
 
+## Quality filtering 
+
+Next the sweeps was filtered.
+To pass quality check the sweep must:
+
+- have *baseline* current within -200 to 0 *pA*
+- have *series resistance * within  +- 20% from the median value
+- have *membrane resistance*, and *capacitance* within 0.5x to 2x from its median values
+
+
+```{r filtering}
+
+# setting limits
+baseline_lims <- c(-200,0)
+Rs_lims <- c(
+    0.8 * median(passive_parameters$Rs_MOhm, na.rm = TRUE), 
+    1.2 * median(passive_parameters$Rs_MOhm, na.rm = TRUE)
+    )
+Rm_lims <- c(
+    0.5 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE), 
+    2 * median(passive_parameters$Rmemb_MOhm, na.rm = TRUE)
+    )
+Cm_lims <- c(
+    0.5 * median(passive_parameters$Cmemb_pF, na.rm = TRUE), 
+    2 * median(passive_parameters$Cmemb_pF, na.rm = TRUE)
+    )
+
+# selecting only the most important variables
+# then do quality check
+passive_parameters <- passive_parameters |>
+    ungroup() |>
+    select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF)|>
+    mutate(
+        QC = between(baseline_pA, baseline_lims[1], baseline_lims[2]) &
+            between(Rs_MOhm, Rs_lims[1], Rs_lims[2]) &
+            between(Rmemb_MOhm, Rm_lims[1], Rm_lims[2]) &
+            between(Cmemb_pF, Cm_lims[1], Cm_lims[2])
+    )
+
+# visualisation of quality check
+plot_filtering <- ggplot(
+    ## first transform dataframe to corrrect format
+    data = passive_parameters |>
+    mutate(
+        bl_pc = baseline_pA / median(baseline_pA, na.rm = TRUE),
+        rs_pc = Rs_MOhm / median(Rs_MOhm, na.rm = TRUE),
+        rm_pc = Rmemb_MOhm / median(Rmemb_MOhm, na.rm = TRUE),
+        cm_pc = Cmemb_pF / median(Cmemb_pF, na.rm = TRUE)
+    ) |>
+    select(file, sweep, bl_pc, rs_pc, rm_pc, cm_pc, QC) |>
+        pivot_longer(
+        cols = c(bl_pc, rs_pc, rm_pc, cm_pc), 
+        names_to = "param", 
+        values_to = "percentage"
+        ),
+    aes(x = param, y = percentage)
+    ) + 
+    geom_boxplot(outliers = FALSE) + 
+    geom_point(
+        aes(group = interaction(file, sweep), color = QC), 
+        position = position_dodge(0.2)
+        ) + 
+    geom_line(
+        aes(group = interaction(file, sweep)), 
+        position = position_dodge(0.2),
+        alpha = 0.05
+        ) +
+    # show our filtering thresholds for each column
+    annotate(
+        "segment",
+        x = c(0.6, 1.6, 1.6, 2.6, 2.6, 3.6, 3.6),
+        xend = c(1.4, 2.4, 2.4, 3.4, 3.4, 4.4, 4.4),
+        y = c(-200/median(passive_parameters$baseline_pA), 0.5, 2, 0.5, 2, 0.8, 1.2),
+        yend = c(-200/median(passive_parameters$baseline_pA), 0.5, 2, 0.5, 2, 0.8, 1.2),
+        color = "darkblue"
+        ) +
+    scale_x_discrete(labels = c("bl_pc" = "baseline", "rs_pc" = "R series", "rm_pc" = "R membrane", "cm_pc" = "C membrane"))+
+    ylim(0, 4) +
+    labs(x = "parameter", y = "Normalised values")
+
+ggplotly(plot_filtering)
+
+
+# filtering raw sweeps data
+keep <- passive_parameters %>% filter(QC) %>% select(file, sweep)
+sweeps_keep <- all_sweeps |> 
+    inner_join(keep, by = c("file", "sweep"))
+    
+
+```
+
+
 ## Calculating the postsynaptic responces
 
 ### postsynaptic responces to AC stimulation
 
-```{r ACpostsynaptic}
+```{r ACpostsynaptic_setup}
 
 # saving only part of data with voltage step to work with
-AC_responses <- all_sweeps |>
+AC_responses <- sweeps_keep |>
     filter(between(time_s, 0.28, 0.4)) |>
     filter(stim == "AC")
 
-# setting time windows for total area of response
-bl_area_tw <- c(0.285, 0.2935)
-area_tw <- c(0.3045, 0.384)
-
-# quick plotly to check time windows
-ACtraces_plot <- ggplot(AC_responses, aes(
-    x = time_s, 
-    y = current_pA,
-    group = interaction(file, sweep),
-    color = file
-    ))+
-    geom_line(
-        alpha = 0.5,
-        show.legend = FALSE
-        ) +
-    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
-    geom_vline(xintercept = area_tw, color = "gold")
-
-ggplotly(ACtraces_plot)
-
-
+# setting the function to calculate responce
 calculate_response <- function(data, bl_tw, resp_tw, param) {
     data |>
     group_by(file, sweep) |>
@@ -317,6 +374,82 @@ calculate_response <- function(data, bl_tw, resp_tw, param) {
     )
 }
 
+```
+
+We calculated total area of the response in this cell.
+Blue and yellow lines represent time frames 
+used to calculate baseline and area.
+
+Solid line shows averaged traces for each conditions.
+
+```{r ACarea}
+# setting time windows for total area of response
+bl_area_tw <- c(0.285, 0.2935)
+area_tw <- c(0.3045, 0.384)
+
+# calculatiing total area
+AC_areas <- calculate_response(
+    AC_responses,
+    bl_tw = bl_area_tw,
+    resp_tw = area_tw,
+    param = "area"
+    ) |>
+    rename(area_pAs = parameter)
+
+# making raw and average recordings data for plots
+AC_area_plot <- AC_responses |>
+        group_by(file,sweep)|>
+        mutate(
+        current_pA = current_pA - 
+            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+    )
+
+AC_average_plot <- AC_area_plot |>
+    group_by(cond, time_s)|>
+    summarise(
+        current_pA = mean(current_pA)
+    )
+
+# plotly to visualise changes in our responce
+ACtraces_plot <- ggplot(
+    AC_area_plot, 
+    aes(
+        x = time_s, 
+        y = current_pA,
+        color = cond
+        )
+    ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        alpha = 0.1,
+        show.legend = FALSE
+        ) +
+    geom_line(
+        data = AC_average_plot,
+        aes(group = cond)
+        ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "gold") +
+    ylim (-100, 20) +
+    labs(x = "Time (s)", y = "Current (pA)",
+         color = "Condition")
+
+ggplotly(ACtraces_plot)
+
+```
+
+Then we identified three possible monosynaptic responses and calculated their amplitudes.
+
+Blue and yellow lines represent time frames 
+used to calculate baseline and amplitude for selected individual mono.
+
+Solid line shows averaged traces for each conditions.
+
+
+```{R AC monos}
+
+### Mono 1
+
 bl_mono1_tw <- c(0.3035, 0.3045)
 mono1_tw <- c(0.3075, 0.3085)
 
@@ -326,6 +459,53 @@ AC_mono1_aplitudes <- calculate_response(
     resp_tw = mono1_tw,
     param = "amplitude"
     )
+
+AC_mono1_aplitudes <- AC_mono1_aplitudes |>
+    rename(mono1_amp_pA = parameter)
+
+# making raw and average recordings data for plots
+AC_mono1_plot <- AC_responses |>
+        group_by(file,sweep)|>
+        mutate(
+        current_pA = current_pA - 
+            mean(current_pA[between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])])
+    ) |>
+    filter(between(time_s, 0.299, 0.315))
+
+AC_average_mono1_plot <- AC_mono1_plot |>
+    group_by(cond, time_s)|>
+    summarise(
+        current_pA = mean(current_pA)
+    )
+
+# plotly to visualise changes in our responce
+ACtraces_mono1_plot <- ggplot(
+    AC_mono1_plot, 
+    aes(
+        x = time_s, 
+        y = current_pA,
+        color = cond
+        )
+    ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        alpha = 0.1,
+        show.legend = FALSE
+        ) +
+    geom_line(
+        data = AC_average_mono1_plot,
+        aes(group = cond)
+        ) +
+    geom_vline(xintercept = bl_mono1_tw, color = "lightblue") +
+    geom_vline(xintercept = mono1_tw, color = "gold") +
+    ylim (-70, 100) +
+    xlim(0.299, 0.315) + 
+    labs(x = "Time (s)", y = "Current (pA)",
+         color = "Condition")
+
+ggplotly(ACtraces_mono1_plot)
+
+### Mono 2
 
 bl_mono2_tw <- c(0.3075, 0.3085)
 mono2_tw <- c(0.310, 0.314)
@@ -337,6 +517,53 @@ AC_mono2_aplitudes <- calculate_response(
     param = "amplitude"
     )
 
+AC_mono2_aplitudes <- AC_mono2_aplitudes |>
+    rename(mono2_amp_pA = parameter)
+
+# making raw and average recordings data for plots
+AC_mono2_plot <- AC_responses |>
+        group_by(file,sweep)|>
+        mutate(
+        current_pA = current_pA - 
+            mean(current_pA[between(time_s, bl_mono2_tw[1], bl_mono2_tw[2])])
+    )|>
+    filter(between(time_s, 0.299, 0.320))
+
+AC_average_mono2_plot <- AC_mono2_plot |>
+    group_by(cond, time_s)|>
+    summarise(
+        current_pA = mean(current_pA)
+    )
+
+# plotly to visualise changes in our responce
+ACtraces_mono2_plot <- ggplot(
+    AC_mono2_plot, 
+    aes(
+        x = time_s, 
+        y = current_pA,
+        color = cond
+        )
+    ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        alpha = 0.1,
+        show.legend = FALSE
+        ) +
+    geom_line(
+        data = AC_average_mono2_plot,
+        aes(group = cond)
+        ) +
+    geom_vline(xintercept = bl_mono2_tw, color = "lightblue") +
+    geom_vline(xintercept = mono2_tw, color = "gold") +
+    ylim (-70, 100) +
+    xlim(0.299, 0.320) + 
+    labs(x = "Time (s)", y = "Current (pA)",
+         color = "Condition")
+
+ggplotly(ACtraces_mono2_plot)
+
+### Mono 3
+
 bl_mono3_tw <- c(0.316, 0.317)
 mono3_tw <- c(0.3175, 0.320)
 
@@ -347,24 +574,57 @@ AC_mono3_aplitudes <- calculate_response(
     param = "amplitude"
     )
 
-AC_areas <- calculate_response(
-    AC_responses,
-    bl_tw = bl_area_tw,
-    resp_tw = area_tw,
-    param = "area"
-    )
-
-AC_areas <- AC_areas |>
-    rename(area_pAs = parameter)
-
-AC_mono1_aplitudes <- AC_mono1_aplitudes |>
-    rename(mono1_amp_pA = parameter)
-
-AC_mono2_aplitudes <- AC_mono2_aplitudes |>
-    rename(mono2_amp_pA = parameter)
-
 AC_mono3_aplitudes <- AC_mono3_aplitudes |>
     rename(mono3_amp_pA = parameter)
+
+# making raw and average recordings data for plots
+AC_mono3_plot <- AC_responses |>
+        group_by(file,sweep)|>
+        mutate(
+        current_pA = current_pA - 
+            mean(current_pA[between(time_s, bl_mono3_tw[1], bl_mono3_tw[2])])
+    )|>
+    filter(between(time_s, 0.299, 0.325))
+
+AC_average_mono3_plot <- AC_mono3_plot |>
+    group_by(cond, time_s)|>
+    summarise(
+        current_pA = mean(current_pA)
+    )
+
+# plotly to visualise changes in our responce
+ACtraces_mono3_plot <- ggplot(
+    AC_mono3_plot, 
+    aes(
+        x = time_s, 
+        y = current_pA,
+        color = cond
+        )
+    ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        alpha = 0.1,
+        show.legend = FALSE
+        ) +
+    geom_line(
+        data = AC_average_mono3_plot,
+        aes(group = cond)
+        ) +
+    geom_vline(xintercept = bl_mono3_tw, color = "lightblue") +
+    geom_vline(xintercept = mono3_tw, color = "gold") +
+    ylim (-70, 100) +
+    xlim(0.299, 0.325) + 
+    labs(x = "Time (s)", y = "Current (pA)",
+         color = "Condition")
+
+ggplotly(ACtraces_mono3_plot)
+
+```
+
+Areas and amplitudes data was saved in "AC_all_params.tsv"
+
+```{r ACsave}
+
 
 AC_all_params <- AC_areas |> 
     left_join(AC_mono1_aplitudes) |>
@@ -372,84 +632,86 @@ AC_all_params <- AC_areas |>
     left_join(AC_mono3_aplitudes) |>
     left_join(passive_parameters)
 
+datatable(AC_all_params)
+
 write_tsv(AC_all_params, file = "../AC_all_params.tsv")
 
-
-
-
-
-
-
-```
-
-
-
-```{r old_calc}
-# AC_mono1_amplts <- AC_responses |>
-#     group_by(file, sweep) |>
-#     mutate(
-#         current_pA = current_pA - 
-#             mean(current_pA[between(time_s, bl_mono1_tw[1], bl_mono1_tw[2])])
-#     ) |>
-#     filter(between(time_s, mono1_tw[1], mono1_tw[2])) |>
-#     summarise(
-#         amplitude_pA = min(current_pA)
-#     )
-# 
-# AC_areas <- AC_responses |>
-#     group_by(file, sweep) |>
-#     mutate(
-#         current_pA = current_pA - 
-#             mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
-#     ) |>
-#     filter(between(time_s, area_tw[1], area_tw[2])) |>
-#     summarise(
-#         total_area_pAs = sum(current_pA) * 0.00005
-#     )
 
 ```
 
 
 ### postsynaptic responces to C stimulation
 
-```{r Cpostsynaptic}
+```{r Cpostsynaptic_setup}
 
-
-
-```
-
-
-
-## Filtering our data from parameters 
-
-```{r filtering}
-
-# selecting only the most important variables
-passive_parameters <- passive_parameters |>
-      select(file, sweep, baseline_pA, Rs_MOhm, Rmemb_MOhm, Cmemb_pF)
-
-baseline_lims <- c(-200,0)
-Rs_lims_norm <- c(
-    0.9 * median(passive_parameters$Rs_MOhm), 
-    1.1 * median(passive_parameters$Rs_MOhm)
-    )
-Rm_lims <- c(
-    0.5 * median(passive_parameters$Rmemb_MOhm), 
-    2 * median(passive_parameters$Rmemb_MOhm)
-    )
-Cm_lims <- c(
-    0.5 * median(passive_parameters$Cmemb_pF), 
-    2 * median(passive_parameters$Cmemb_pF)
-    )
-
-ggplot(passive_parameters, aes(y = baseline_pA))+
-    geom_boxplot() + 
-    geom_point(aes(group = interaction(file, sweep), x = 0, color = file),
-               position = position_dodge(width = 0.15), size = 2.2
-               )
+# saving only part of data with voltage step to work with
+C_responses <- sweeps_keep |>
+    filter(between(time_s, 0.28, 0.4)) |>
+    filter(stim == "C")
 
 ```
 
+We calculated total area of the response in this cell.
+Blue and yellow lines represent time frames 
+used to calculate baseline and area.
+
+Solid line shows averaged traces for each conditions.
+
+```{r Carea}
+# setting time windows for total area of response
+bl_area_tw <- c(0.285, 0.2935)
+area_tw <- c(0.3045, 0.384)
+
+# calculatiing total area
+C_areas <- calculate_response(
+    C_responses,
+    bl_tw = bl_area_tw,
+    resp_tw = area_tw,
+    param = "area"
+    ) |>
+    rename(area_pAs = parameter)
+
+# making raw and average recordings data for plots
+C_area_plot <- C_responses |>
+        group_by(file,sweep)|>
+        mutate(
+        current_pA = current_pA - 
+            mean(current_pA[between(time_s, bl_area_tw[1], bl_area_tw[2])])
+    )
+
+C_average_plot <- C_area_plot |>
+    group_by(cond, time_s)|>
+    summarise(
+        current_pA = mean(current_pA)
+    )
+
+# plotly to visualise changes in our responce
+Ctraces_plot <- ggplot(
+    C_area_plot, 
+    aes(
+        x = time_s, 
+        y = current_pA,
+        color = cond
+        )
+    ) +
+    geom_line(
+        aes(group = interaction(file, sweep)),
+        alpha = 0.1,
+        show.legend = FALSE
+        ) +
+    geom_line(
+        data = C_average_plot,
+        aes(group = cond)
+        ) +
+    geom_vline(xintercept = bl_area_tw, color = "lightblue") +
+    geom_vline(xintercept = area_tw, color = "gold") +
+    ylim (-100, 20) +
+    labs(x = "Time (s)", y = "Current (pA)",
+         color = "Condition")
+
+ggplotly(Ctraces_plot)
+
+```
 
 
 
