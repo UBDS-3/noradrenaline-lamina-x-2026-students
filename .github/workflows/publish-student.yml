@@ -3,8 +3,9 @@ name: Publish Student Notebook
 # Runs whenever a student pushes rendered HTML on their branch.
 on:
   push:
-    branches:
-      - 'student/**'
+    branches-ignore:
+      - main
+      - gh-pages
     paths:
       - 'notebooks/**'
 
@@ -18,11 +19,12 @@ jobs:
       - name: Check out student branch
         uses: actions/checkout@v4
 
-      # Extract "firstname" from refs/heads/student/firstname
+      # Works for both "student/hovorov" and plain "hovorov" branch names.
       - name: Get student name from branch
         id: info
         run: |
-          STUDENT="${GITHUB_REF#refs/heads/student/}"
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          STUDENT="${BRANCH#student/}"
           echo "student=$STUDENT" >> "$GITHUB_OUTPUT"
 
       # Stage only the rendered HTML (and any _files/ dirs) — excludes .qmd source.
@@ -34,12 +36,12 @@ jobs:
             [ -d "$d" ] && cp -r "$d" _deploy/notebooks/
           done
 
-      # Deploy to gh-pages under student/<name>/ — mirrors the branch naming convention.
+      # Deploy to gh-pages under <branchname>/ — same as the student's branch name.
       # keep_files: true preserves every other student's directory.
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: _deploy
-          destination_dir: student/${{ steps.info.outputs.student }}
+          destination_dir: ${{ steps.info.outputs.student }}
           keep_files: true
